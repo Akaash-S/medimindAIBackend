@@ -1,6 +1,7 @@
 import html
 from fastapi import APIRouter, Depends, HTTPException
-from app.core.firebase import db, firestore
+from app.core.firebase import db
+from firebase_admin import firestore
 from app.core.security import get_current_user
 import uuid
 
@@ -64,7 +65,6 @@ async def get_activity_log(current_user: dict = Depends(get_current_user)):
 
     docs = db.collection("user_activity") \
         .where("user_id", "==", uid) \
-        .order_by("created_at", direction=firestore.Query.DESCENDING) \
         .limit(50) \
         .stream()
 
@@ -74,6 +74,8 @@ async def get_activity_log(current_user: dict = Depends(get_current_user)):
         data["id"] = doc.id
         results.append(data)
 
+    # Sort by created_at descending
+    results.sort(key=lambda x: x.get("created_at", "") or "", reverse=True)
     return results
 
 
@@ -102,7 +104,6 @@ async def get_sessions(current_user: dict = Depends(get_current_user)):
 
     docs = db.collection("user_sessions") \
         .where("user_id", "==", uid) \
-        .order_by("last_active", direction=firestore.Query.DESCENDING) \
         .stream()
 
     results = []
@@ -111,6 +112,8 @@ async def get_sessions(current_user: dict = Depends(get_current_user)):
         data["id"] = doc.id
         results.append(data)
 
+    # Sort by last_active descending
+    results.sort(key=lambda x: x.get("last_active", "") or "", reverse=True)
     return results
 
 
