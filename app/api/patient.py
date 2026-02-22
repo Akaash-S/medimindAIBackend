@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from app.core.firebase import db
 from app.core.security import get_current_patient
 
 router = APIRouter()
@@ -9,5 +10,10 @@ async def get_patient_profile(current_user: dict = Depends(get_current_patient))
 
 @router.patch("/me")
 async def update_patient_profile(profile_data: dict, current_user: dict = Depends(get_current_patient)):
-    # Logic to update user in Firestore
-    return {"message": "Profile updated"}
+    user_ref = db.collection("users").document(current_user["uid"])
+    
+    # Merge profile data and mark complete
+    update_data = {**profile_data, "profile_complete": True}
+    user_ref.update(update_data)
+    
+    return {"message": "Profile updated", "profile": update_data}

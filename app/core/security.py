@@ -17,11 +17,12 @@ async def get_current_user(res: HTTPAuthorizationCredentials = Depends(security)
         user_doc = user_ref.get()
         
         if not user_doc.exists:
-            # Create a default user profile
+            # Create a base user profile without a role
             user_data = {
                 "uid": uid,
                 "email": decoded_token.get("email"),
-                "role": "patient",  # Default role
+                "role": None,  # Explicitly None until selection
+                "profile_complete": False,
                 "created_at": firestore.SERVER_TIMESTAMP
             }
             user_ref.set(user_data)
