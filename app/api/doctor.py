@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from app.core.security import get_current_doctor
+from app.core.security import get_current_doctor, get_current_user
 from app.core.firebase import db
 
 router = APIRouter()
@@ -9,11 +9,16 @@ async def get_doctor_profile(current_user: dict = Depends(get_current_doctor)):
     return current_user
 
 @router.patch("/me")
-async def update_doctor_profile(profile_data: dict, current_user: dict = Depends(get_current_doctor)):
+async def update_doctor_profile(profile_data: dict, current_user: dict = Depends(get_current_user)):
+    """Update doctor profile — uses get_current_user (not get_current_doctor) 
+    so new users completing onboarding can update before role check blocks them."""
     user_ref = db.collection("users").document(current_user["uid"])
     update_data = {**profile_data, "profile_complete": True}
     user_ref.update(update_data)
-    return {"message": "Profile updated", "profile": update_data}
+    
+    # Return the full merged document
+    updated_doc = user_ref.get()
+    return updated_doc.to_dict()
 
 @router.get("/patients")
 async def get_doctor_patients(current_user: dict = Depends(get_current_doctor)):
