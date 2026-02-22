@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: medimind-api-dev
+    runtime: docker
+    plan: free # Change to starter or higher for production
+    region: ohio # Choose preferred region
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: AI_PROVIDER
+        value: groq
+      - key: BACKEND_CORS_ORIGINS
+        value: '["*"]' # Adjust for production
+    healthCheckPath: /api/v1/health
