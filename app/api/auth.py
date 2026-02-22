@@ -27,10 +27,7 @@ async def select_role(
     current_user: dict = Depends(get_current_user)
 ):
     if role not in ["patient", "doctor"]:
-        raise HTTPException(status_code=400, detail="Invalid role")
-    
-    if current_user.get("role"):
-        raise HTTPException(status_code=400, detail="Role already assigned")
+        raise HTTPException(status_code=400, detail="Invalid role. Must be 'patient' or 'doctor'.")
     
     user_ref = db.collection("users").document(current_user["uid"])
     user_ref.update({"role": role})
