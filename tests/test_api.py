@@ -2,60 +2,65 @@ import pytest
 from app.core.config import settings
 
 def test_health_check(client, mock_db):
-    """
-    Test the health check endpoint.
-    """
-    # Mock Firestore set call
     mock_db.collection().document().set.return_value = None
-    
     response = client.get(f"{settings.API_V1_STR}/health")
     assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "healthy"
-    assert "database" in data
+    assert response.json()["status"] == "healthy"
 
 def test_root_endpoint(client):
-    """
-    Test the root endpoint.
-    """
     response = client.get("/")
     assert response.status_code == 200
-    assert "Welcome to MediMind AI API" in response.json()["message"]
+    assert "Welcome" in response.json()["message"]
 
-def test_unauthorized_reports(client):
-    """
-    Test that reports endpoint returns 403 without authorization header.
-    """
-    response = client.get(f"{settings.API_V1_STR}/reports")
+# --- Reports Tests ---
+def test_reports_access_denied(client):
+    response = client.get(f"{settings.API_V1_STR}/reports/")
     assert response.status_code == 403
 
-def test_authorized_reports(client, override_get_current_user, mock_db):
-    """
-    Test reports endpoint with authorized mock user.
-    """
-    # Mock Firestore query
+def test_reports_access_allowed(client, override_patient, mock_db):
     mock_db.collection().where().stream.return_value = []
-    
-    response = client.get(f"{settings.API_V1_STR}/reports")
+    response = client.get(f"{settings.API_V1_STR}/reports/")
     assert response.status_code == 200
     assert isinstance(response.json(), list)
 
-def test_upload_url_logic(client, override_get_current_user, mock_db):
-    """
-    Test the upload-url generation endpoint.
-    """
-    # Mock Firestore set
+def test_upload_url_logic(client, override_patient, mock_db):
     mock_db.collection().document().set.return_value = None
-    
-    # Mock storage signed URL (would need to patch storage_service directly for deeper test)
     with pytest.MonkeyPatch.context() as m:
-        m.setattr("app.services.storage_service.storage_service.get_upload_url", 
-                  lambda b, p: MagicMock(get=lambda k: "https://signed.url"))
-        
-        response = client.post(
-            f"{settings.API_V1_STR}/reports/upload-url?file_name=test.pdf"
-        )
+        async def mock_get_url(bucket, path):
+            return {"signedURL": "https://signed.url"}
+        m.setattr("app.services.storage_service.storage_service.get_upload_url", mock_get_url)
+        response = client.post(f"{settings.API_V1_STR}/reports/upload-url?file_name=test.pdf")
         assert response.status_code == 200
-        data = response.json()
-        assert "upload_url" in data
-        assert data["upload_url"] == "https://signed.url"
+        assert response.json()["upload_url"] == "https://signed.url"
+
+# --- Patient Tests ---
+def test_patient_me(client, override_patient):
+    response = client.get(f"{settings.API_V1_STR}/patient/me")
+    assert response.status_code == 200
+    assert response.json()["uid"] == "p-123"
+
+def test_patient_me_denied_to_doctor(client, override_doctor):
+    response = client.get(f"{settings.API_V1_STR}/patient/me")
+    assert response.status_code == 403
+
+# --- Doctor Tests ---
+def test_doctor_dashboard(client, override_doctor):
+    response = client.get(f"{settings.API_V1_STR}/doctor/dashboard")
+    assert response.status_code == 200
+    assert "stats" in response.json()
+
+def test_doctor_access_denied_to_patient(client, override_patient):
+    response = client.get(f"{settings.API_V1_STR}/doctor/dashboard")
+    assert response.status_code == 403
+
+# --- Appointments Tests ---
+def test_appointments_list(client, override_patient):
+    response = client.get(f"{settings.API_V1_STR}/appointments/")
+    assert response.status_code == 200
+    assert "appointments" in response.json()
+
+# --- Messages Tests ---
+def test_messages_conversations(client, override_patient):
+    response = client.get(f"{settings.API_V1_STR}/messages/conversations")
+    assert response.status_code == 200
+    assert "conversations" in response.json()

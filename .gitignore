@@ -1,2 +1,4 @@
 .env*
 *.md
+service-account-key.json
+*__pycache__*

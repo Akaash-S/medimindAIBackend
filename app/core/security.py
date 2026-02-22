@@ -1,6 +1,6 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from firebase_admin import auth
+from firebase_admin import auth, firestore
 from app.core.config import settings
 from app.core.firebase import db
 

@@ -5,6 +5,7 @@ import json
 
 def initialize_firebase():
     cert_dict = {
+        "type": "service_account",
         "project_id": settings.FIREBASE_PROJECT_ID,
         "private_key": settings.FIREBASE_PRIVATE_KEY.replace("\\n", "\n"),
         "client_email": settings.FIREBASE_CLIENT_EMAIL,
@@ -16,6 +17,6 @@ def initialize_firebase():
     if not firebase_admin._apps:
         firebase_admin.initialize_app(cred)
     
-    return firestore.client(database_id=settings.FIRESTORE_DB)
+    return firestore.client()
 
 db = initialize_firebase()

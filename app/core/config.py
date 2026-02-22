@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # CORS
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:8080"]
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+    # Deployment
+    PORT: int = 8000
+    HOST: str = "0.0.0.0"
+
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 settings = Settings()
