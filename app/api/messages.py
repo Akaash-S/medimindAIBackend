@@ -84,7 +84,11 @@ async def create_conversation(conv_data: dict, current_user: dict = Depends(get_
     }
 
     db.collection("conversations").document(conv_id).set(conversation)
-    return conversation
+
+    # Re-read to get resolved timestamps
+    created = db.collection("conversations").document(conv_id).get().to_dict()
+    created["id"] = conv_id
+    return created
 
 
 @router.get("/conversations/{conversation_id}/messages")
@@ -156,4 +160,7 @@ async def send_message(conversation_id: str, message_data: dict, current_user: d
         "last_message_at": firestore.SERVER_TIMESTAMP,
     })
 
-    return message
+    # Re-read to get resolved timestamps
+    created = conv_ref.collection("messages").document(msg_id).get().to_dict()
+    created["id"] = msg_id
+    return created

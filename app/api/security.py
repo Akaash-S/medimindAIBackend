@@ -53,7 +53,10 @@ async def update_security_settings(update_data: dict, current_user: dict = Depen
     # Log the settings change
     _log_activity(uid, "security", "Updated security settings")
 
-    return {**safe_update, "message": "Settings updated"}
+    # Return only serializable fields (exclude SERVER_TIMESTAMP sentinel)
+    response = {k: v for k, v in safe_update.items() if k != "updated_at"}
+    response["message"] = "Settings updated"
+    return response
 
 
 # ---------- Activity Log ----------
@@ -137,7 +140,10 @@ async def register_session(session_data: dict, current_user: dict = Depends(get_
 
     db.collection("user_sessions").document(session_id).set(session)
     _log_activity(uid, "login", f"New login from {session['device']}")
-    return session
+
+    # Return serializable response (exclude SERVER_TIMESTAMP sentinels)
+    response = {k: v for k, v in session.items() if k not in ("last_active", "created_at")}
+    return response
 
 
 @router.delete("/security/sessions/{session_id}")

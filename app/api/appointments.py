@@ -47,7 +47,11 @@ async def create_appointment(appointment_data: dict, current_user: dict = Depend
     }
 
     db.collection("appointments").document(appt_id).set(appt)
-    return appt
+
+    # Re-read to get resolved timestamps
+    created = db.collection("appointments").document(appt_id).get().to_dict()
+    created["id"] = appt_id
+    return created
 
 @router.patch("/{appointment_id}")
 async def update_appointment(appointment_id: str, update_data: dict, current_user: dict = Depends(get_current_user)):
