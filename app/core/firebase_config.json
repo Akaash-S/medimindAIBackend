@@ -1,0 +1,13 @@
+{
+    "auth_config": {
+        "providers": [
+            "google.com"
+        ],
+        "allow_new_users": true,
+        "default_role": "patient"
+    },
+    "roles": [
+        "patient",
+        "doctor"
+    ]
+}
