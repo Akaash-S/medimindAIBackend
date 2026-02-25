@@ -111,3 +111,33 @@ async def get_reports(current_user: dict = Depends(get_current_user)):
         results.append(data)
         
     return results
+
+@router.delete("/{report_id}")
+async def delete_report(
+    report_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Delete a report document from Firestore and its file from storage.
+    """
+    report_ref = db.collection("reports").document(report_id)
+    report_doc = report_ref.get()
+    
+    if not report_doc.exists:
+        raise HTTPException(status_code=404, detail="Report not found")
+    
+    report_data = report_doc.to_dict()
+    if report_data["user_id"] != current_user["uid"]:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    # Delete from storage
+    try:
+        await storage_service.delete_file("reports", report_data["file_path"])
+    except Exception as e:
+        print(f"Warning: Failed to delete file from storage: {e}")
+        # We continue to delete from Firestore even if storage delete fails
+        
+    # Delete from Firestore
+    report_ref.delete()
+    
+    return {"message": "Report deleted successfully"}

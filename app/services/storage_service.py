@@ -44,4 +44,11 @@ class StorageService:
             print(f"Error downloading file from bucket '{bucket}', path '{path}': {e}")
             raise e
 
+    async def delete_file(self, bucket: str, path: str):
+        try:
+            return self.client.storage.from_(bucket).remove(path)
+        except Exception as e:
+            print(f"Error deleting file from bucket '{bucket}', path '{path}': {e}")
+            raise e
+
 storage_service = StorageService()
