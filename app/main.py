@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api import patient, doctor, reports, appointments, messages, health, auth, security
+from app.api import patient, doctor, reports, appointments, messages, health, auth, security, consultations
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -32,3 +32,4 @@ app.include_router(doctor.router, prefix=f"{settings.API_V1_STR}/doctor", tags=[
 app.include_router(appointments.router, prefix=f"{settings.API_V1_STR}/appointments", tags=["appointments"])
 app.include_router(messages.router, prefix=f"{settings.API_V1_STR}/messages", tags=["messages"])
 app.include_router(security.router, prefix=f"{settings.API_V1_STR}", tags=["security"])
+app.include_router(consultations.router, prefix=f"{settings.API_V1_STR}/consultations", tags=["consultations"])

@@ -37,6 +37,13 @@ async def process_report_task(report_id: str, user_id: str, file_path: str):
             "risk_level": analysis_result.get("risk_level", "Unknown"),
             "summary": analysis_result.get("summary", "")
         })
+
+        # 5. Auto-generate consultation recommendation if risk is elevated
+        try:
+            from app.api.consultations import auto_recommend_from_report
+            auto_recommend_from_report(report_id, user_id, analysis_result)
+        except Exception as rec_err:
+            print(f"Recommendation generation failed (non-critical): {rec_err}")
         
     except Exception as e:
         print(f"Error processing report {report_id}: {e}")

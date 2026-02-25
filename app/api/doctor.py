@@ -316,6 +316,23 @@ async def add_prescription(
     
     doc_ref = db.collection("prescriptions").add(rx_data)
     
+    # Auto-create prescription discussion recommendation
+    try:
+        from app.api.consultations import generate_recommendation
+        patient_name = patient_doc.to_dict().get("full_name", "Patient")
+        generate_recommendation(
+            user_id=patient_uid,
+            doctor_id=doctor_uid,
+            report_id=None,
+            reason_type="prescription",
+            risk_level="Medium",
+            summary=f"New prescription: {body.medicine} ({body.dosage}, {body.frequency}). Schedule a consultation to discuss.",
+            doctor_name=current_user.get("full_name", "Doctor"),
+            patient_name=patient_name,
+        )
+    except Exception as e:
+        print(f"Prescription recommendation failed (non-critical): {e}")
+    
     return {
         "id": doc_ref[1].id,
         "medicine": body.medicine,
