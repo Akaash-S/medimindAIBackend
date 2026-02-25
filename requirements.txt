@@ -11,5 +11,7 @@ python-dotenv
 structlog
 httpx
 aiofiles
+pyotp
+qrcode[pil]
 pytest
 pytest-asyncio
