@@ -36,14 +36,36 @@ async def get_report_upload_url(
     # Generate signed URL
     try:
         res = await storage_service.get_upload_url("reports", file_path)
-        upload_url = res.get("signedURL")
+        
+        # Log the result for debugging
+        print(f"DEBUG: get_upload_url result: {res}")
+        
+        if not res or not isinstance(res, dict):
+            error_msg = f"Supabase did not return a valid dictionary. Response: {res}"
+            print(f"CRITICAL: {error_msg}")
+            raise Exception(error_msg)
+            
+        # Try both camelCase and snake_case
+        upload_url = res.get("signedURL") or res.get("signed_url")
+        
+        if not upload_url:
+            error_msg = f"No 'signedURL' or 'signed_url' found in Supabase response: {res}"
+            print(f"CRITICAL: {error_msg}")
+            raise Exception(error_msg)
+            
+        final_file_path = res.get("file_path") or file_path
     except Exception as e:
+        print(f"CRITICAL: Failed to generate upload URL for report {report_id}: {str(e)}")
+        # Delete the pending doc since we can't upload
         db.collection("reports").document(report_id).delete()
-        raise HTTPException(status_code=500, detail=f"Failed to generate upload URL: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to generate upload URL. Please ensure your Supabase storage is configured and the 'reports' bucket is public/accessible. Detail: {str(e)}"
+        )
     
     return {
         "upload_url": upload_url,
-        "file_path": file_path,
+        "file_path": final_file_path,
         "report_id": report_id
     }
 

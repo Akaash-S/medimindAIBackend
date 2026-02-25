@@ -17,12 +17,18 @@ async def process_report_task(report_id: str, user_id: str, file_path: str):
         report_ref = db.collection("reports").document(report_id)
         report_ref.update({"status": "processing"})
 
-        # 1. Download file content (Simulated)
-        # file_data = await storage_service.download_file("reports", file_path)
+        # 1. Download file content
+        file_bytes = await storage_service.download_file("reports", file_path)
         
         # 2. Extract Text (OCR) 
-        # For MVP, we'll simulate extraction. In prod, we'd use Tesseract or Cloud Vision
-        extracted_text = "Patient feels dizzy and has high frequency of headaches. Glucose levels are 105 mg/dL. LDL is 145 mg/dL."
+        from app.services.ocr_service import ocr_service
+        # Use file_path basename as file_name for extension check
+        file_name = file_path.split("/")[-1]
+        extracted_text = ocr_service.extract_text(file_bytes, file_name)
+        
+        if not extracted_text:
+            # Fallback if extraction failed but file exists
+            extracted_text = "Medical report content could not be cleanly extracted. Please review the original file."
         
         # 3. Analyze with AI
         ai_provider = get_ai_provider()
@@ -35,7 +41,8 @@ async def process_report_task(report_id: str, user_id: str, file_path: str):
             "analysis": analysis_result,
             "processed_at": firestore.SERVER_TIMESTAMP,
             "risk_level": analysis_result.get("risk_level", "Unknown"),
-            "summary": analysis_result.get("summary", "")
+            "summary": analysis_result.get("summary", ""),
+            "health_score": analysis_result.get("health_score", 0)
         })
 
         # 5. Auto-generate consultation recommendation if risk is elevated
