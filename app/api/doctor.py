@@ -326,6 +326,168 @@ async def add_prescription(
     }
 
 
+# ==================== REPORTS ====================
+
+
+@router.get("/reports")
+async def get_doctor_reports(current_user: dict = Depends(get_current_doctor)):
+    """Get all reports from patients assigned to this doctor."""
+    doctor_uid = current_user["uid"]
+    
+    # Get assigned patient UIDs and names
+    patients_ref = db.collection("users").where(
+        "role", "==", "patient"
+    ).where("assigned_doctor", "==", doctor_uid)
+    patient_docs = list(patients_ref.stream())
+    
+    if not patient_docs:
+        return {"reports": [], "total": 0, "pending": 0, "reviewed": 0}
+    
+    patient_map = {}
+    for pdoc in patient_docs:
+        pd = pdoc.to_dict()
+        uid = pd.get("uid", pdoc.id)
+        patient_map[uid] = {
+            "name": pd.get("full_name", "Unknown"),
+            "photo_url": pd.get("photo_url", ""),
+            "avatar": _get_initials(pd.get("full_name", "")),
+        }
+    
+    # Fetch reports for all assigned patients
+    reports = []
+    for patient_uid in patient_map:
+        reports_ref = db.collection("reports").where(
+            "user_id", "==", patient_uid
+        ).order_by("created_at", direction=firestore.Query.DESCENDING).limit(50)
+        
+        for rdoc in reports_ref.stream():
+            rd = rdoc.to_dict()
+            ai = rd.get("ai_analysis", {})
+            has_ai = bool(ai) and isinstance(ai, dict)
+            risk_level = "low"
+            health_score = None
+            ai_summary = ""
+            extracted_values = []
+            
+            if has_ai:
+                risk_level = ai.get("risk_level", "low")
+                health_score = ai.get("health_score")
+                ai_summary = ai.get("summary", "")
+                extracted_values = ai.get("extracted_values", [])
+            
+            ts = rd.get("created_at")
+            created_at = ts.isoformat() if ts and hasattr(ts, "isoformat") else str(ts) if ts else None
+            
+            patient_info = patient_map.get(patient_uid, {})
+            
+            reports.append({
+                "id": rd.get("id", rdoc.id),
+                "patient_uid": patient_uid,
+                "patient_name": patient_info.get("name", "Unknown"),
+                "patient_photo": patient_info.get("photo_url", ""),
+                "patient_avatar": patient_info.get("avatar", "?"),
+                "file_name": rd.get("file_name", ""),
+                "file_path": rd.get("file_path", ""),
+                "status": rd.get("status", "pending"),
+                "reviewed": rd.get("reviewed", False),
+                "reviewed_at": None,
+                "created_at": created_at,
+                "risk_level": risk_level,
+                "health_score": health_score,
+                "has_ai": has_ai,
+                "ai_summary": ai_summary,
+                "extracted_values": extracted_values,
+            })
+    
+    # Sort by date descending
+    reports.sort(key=lambda r: r["created_at"] or "", reverse=True)
+    
+    pending = sum(1 for r in reports if not r["reviewed"])
+    reviewed = sum(1 for r in reports if r["reviewed"])
+    
+    return {
+        "reports": reports,
+        "total": len(reports),
+        "pending": pending,
+        "reviewed": reviewed,
+    }
+
+
+@router.get("/reports/{report_id}")
+async def get_report_detail(report_id: str, current_user: dict = Depends(get_current_doctor)):
+    """Get full details for a single report."""
+    doctor_uid = current_user["uid"]
+    
+    report_ref = db.collection("reports").document(report_id)
+    report_doc = report_ref.get()
+    
+    if not report_doc.exists:
+        raise HTTPException(status_code=404, detail="Report not found")
+    
+    rd = report_doc.to_dict()
+    patient_uid = rd.get("user_id", "")
+    
+    # Verify doctor has access (patient is assigned to them)
+    patient_doc = db.collection("users").document(patient_uid).get()
+    if not patient_doc.exists or patient_doc.to_dict().get("assigned_doctor") != doctor_uid:
+        raise HTTPException(status_code=403, detail="Not authorized to view this report")
+    
+    pd = patient_doc.to_dict()
+    ai = rd.get("ai_analysis", {})
+    has_ai = bool(ai) and isinstance(ai, dict)
+    
+    ts = rd.get("created_at")
+    created_at = ts.isoformat() if ts and hasattr(ts, "isoformat") else str(ts) if ts else None
+    
+    return {
+        "id": rd.get("id", report_id),
+        "patient_uid": patient_uid,
+        "patient_name": pd.get("full_name", "Unknown"),
+        "patient_photo": pd.get("photo_url", ""),
+        "patient_avatar": _get_initials(pd.get("full_name", "")),
+        "file_name": rd.get("file_name", ""),
+        "file_path": rd.get("file_path", ""),
+        "status": rd.get("status", "pending"),
+        "reviewed": rd.get("reviewed", False),
+        "created_at": created_at,
+        "risk_level": ai.get("risk_level", "low") if has_ai else "low",
+        "health_score": ai.get("health_score") if has_ai else None,
+        "has_ai": has_ai,
+        "ai_summary": ai.get("summary", "") if has_ai else "",
+        "extracted_values": ai.get("extracted_values", []) if has_ai else [],
+        "recommendations": ai.get("recommendations", []) if has_ai else [],
+    }
+
+
+@router.patch("/reports/{report_id}/review")
+async def mark_report_reviewed(report_id: str, current_user: dict = Depends(get_current_doctor)):
+    """Mark a report as reviewed by the doctor."""
+    doctor_uid = current_user["uid"]
+    
+    report_ref = db.collection("reports").document(report_id)
+    report_doc = report_ref.get()
+    
+    if not report_doc.exists:
+        raise HTTPException(status_code=404, detail="Report not found")
+    
+    rd = report_doc.to_dict()
+    patient_uid = rd.get("user_id", "")
+    
+    # Verify doctor has access
+    patient_doc = db.collection("users").document(patient_uid).get()
+    if not patient_doc.exists or patient_doc.to_dict().get("assigned_doctor") != doctor_uid:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    report_ref.update({
+        "reviewed": True,
+        "reviewed_by": doctor_uid,
+        "reviewed_at": firestore.SERVER_TIMESTAMP,
+        "status": "reviewed",
+    })
+    
+    return {"message": "Report marked as reviewed", "report_id": report_id}
+
+
 # ==================== DASHBOARD ====================
 
 
