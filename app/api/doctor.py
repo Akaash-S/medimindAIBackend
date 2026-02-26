@@ -67,10 +67,8 @@ async def get_doctor_patients(current_user: dict = Depends(get_current_doctor)):
         pd = doc.to_dict()
         uid = pd.get("uid", doc.id)
         
-        # Get report count and latest report
-        reports_ref = db.collection("reports").where(
-            "user_id", "==", uid
-        ).order_by("created_at", direction=firestore.Query.DESCENDING).limit(1)
+        # Get reports (without order_by to avoid composite index requirement)
+        reports_ref = db.collection("reports").where("user_id", "==", uid).limit(10)
         report_docs = list(reports_ref.stream())
         
         report_count_ref = db.collection("reports").where("user_id", "==", uid)
@@ -80,6 +78,10 @@ async def get_doctor_patients(current_user: dict = Depends(get_current_doctor)):
         last_report_risk = None
         health_score = 75  # default
         
+        # Sort in memory to find latest
+        if report_docs:
+            report_docs.sort(key=lambda d: d.to_dict().get("created_at") or "", reverse=True)
+            
         if report_docs:
             latest = report_docs[0].to_dict()
             ts = latest.get("created_at")
@@ -138,11 +140,16 @@ async def get_patient_detail(patient_uid: str, current_user: dict = Depends(get_
     if pd.get("assigned_doctor") != doctor_uid:
         raise HTTPException(status_code=403, detail="Patient not assigned to you")
     
-    # Get patient reports
+    # Get patient reports (without order_by to avoid composite index requirement)
     reports_ref = db.collection("reports").where(
         "user_id", "==", patient_uid
-    ).order_by("created_at", direction=firestore.Query.DESCENDING).limit(20)
+    ).limit(50)
     report_docs = list(reports_ref.stream())
+    
+    # Sort in memory
+    report_docs.sort(key=lambda d: d.to_dict().get("created_at") or "", reverse=True)
+    # Take latest 20
+    report_docs = report_docs[:20]
     
     reports = []
     health_score = 75
@@ -167,16 +174,20 @@ async def get_patient_detail(patient_uid: str, current_user: dict = Depends(get_
             "has_ai": has_ai,
         })
     
-    # Get doctor notes for this patient
+    # Get doctor notes (without order_by to avoid composite index requirement)
     notes_ref = db.collection("doctor_notes").where(
         "patient_uid", "==", patient_uid
-    ).where("doctor_uid", "==", doctor_uid).order_by(
-        "created_at", direction=firestore.Query.DESCENDING
-    ).limit(20)
+    ).where("doctor_uid", "==", doctor_uid).limit(50)
     
     notes = []
     try:
-        for ndoc in notes_ref.stream():
+        raw_notes = list(notes_ref.stream())
+        # Sort in memory
+        raw_notes.sort(key=lambda d: d.to_dict().get("created_at") or "", reverse=True)
+        # Take latest 20
+        raw_notes = raw_notes[:20]
+        
+        for ndoc in raw_notes:
             nd = ndoc.to_dict()
             ts = nd.get("created_at")
             notes.append({
@@ -187,16 +198,20 @@ async def get_patient_detail(patient_uid: str, current_user: dict = Depends(get_
     except Exception:
         pass  # Collection may not exist yet
     
-    # Get prescriptions
+    # Get prescriptions (without order_by to avoid composite index requirement)
     rx_ref = db.collection("prescriptions").where(
         "patient_uid", "==", patient_uid
-    ).where("doctor_uid", "==", doctor_uid).order_by(
-        "created_at", direction=firestore.Query.DESCENDING
-    ).limit(20)
+    ).where("doctor_uid", "==", doctor_uid).limit(50)
     
     prescriptions = []
     try:
-        for rxdoc in rx_ref.stream():
+        raw_rx = list(rx_ref.stream())
+        # Sort in memory
+        raw_rx.sort(key=lambda d: d.to_dict().get("created_at") or "", reverse=True)
+        # Take latest 20
+        raw_rx = raw_rx[:20]
+        
+        for rxdoc in raw_rx:
             rx = rxdoc.to_dict()
             prescriptions.append({
                 "id": rxdoc.id,
@@ -374,10 +389,11 @@ async def get_doctor_reports(current_user: dict = Depends(get_current_doctor)):
     
     # Fetch reports for all assigned patients
     reports = []
+    # Fetch reports (without order_by to avoid composite index requirement)
     for patient_uid in patient_map:
         reports_ref = db.collection("reports").where(
             "user_id", "==", patient_uid
-        ).order_by("created_at", direction=firestore.Query.DESCENDING).limit(50)
+        ).limit(50)
         
         for rdoc in reports_ref.stream():
             rd = rdoc.to_dict()

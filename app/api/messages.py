@@ -106,13 +106,13 @@ async def get_messages(conversation_id: str, current_user: dict = Depends(get_cu
     if uid not in conv_data.get("participant_ids", []):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Fetch messages ordered by created_at
-    msgs = conv_ref.collection("messages") \
-        .order_by("created_at") \
-        .stream()
+    # Fetch messages (sort in memory to avoid index requirements)
+    msgs_raw = list(conv_ref.collection("messages").stream())
+    # Sort by created_at ascending
+    msgs_raw.sort(key=lambda m: m.to_dict().get("created_at") or "")
 
     results = []
-    for msg in msgs:
+    for msg in msgs_raw:
         data = msg.to_dict()
         data["id"] = msg.id
         results.append(data)
