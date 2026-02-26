@@ -11,6 +11,8 @@ class UserState(BaseModel):
     email: str
     role: Optional[str] = None
     profile_complete: bool = False
+    assigned_doctor: Optional[str] = None
+    assigned_doctor_name: Optional[str] = None
 
 @router.get("/me", response_model=UserState)
 async def get_my_state(current_user: dict = Depends(get_current_user)):
@@ -18,7 +20,9 @@ async def get_my_state(current_user: dict = Depends(get_current_user)):
         "uid": current_user.get("uid"),
         "email": current_user.get("email"),
         "role": current_user.get("role"),
-        "profile_complete": current_user.get("profile_complete", False)
+        "profile_complete": current_user.get("profile_complete", False),
+        "assigned_doctor": current_user.get("assigned_doctor"),
+        "assigned_doctor_name": current_user.get("assigned_doctor_name")
     }
 
 @router.patch("/role")

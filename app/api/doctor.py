@@ -536,3 +536,56 @@ async def get_doctor_dashboard(current_user: dict = Depends(get_current_doctor))
             "pending_reports": pending_reports,
         }
     }
+
+
+# ==================== AVAILABILITY ====================
+
+
+class AvailabilitySlot(BaseModel):
+    id: Optional[str] = None
+    date: str  # YYYY-MM-DD
+    start_time: str  # HH:MM
+    end_time: str  # HH:MM
+    status: str = "free"  # "free" or "booked"
+
+
+@router.get("/availability")
+async def get_availability(current_user: dict = Depends(get_current_doctor)):
+    """Fetch all availability slots for the doctor."""
+    doctor_uid = current_user["uid"]
+    slots_ref = db.collection("users").document(doctor_uid).collection("availability").stream()
+    slots = []
+    for doc in slots_ref:
+        slot = doc.to_dict()
+        slot["id"] = doc.id
+        slots.append(slot)
+    
+    # Sort by date and time
+    slots.sort(key=lambda x: (x["date"], x["start_time"]))
+    return slots
+
+
+@router.post("/availability")
+async def add_availability(slot: AvailabilitySlot, current_user: dict = Depends(get_current_doctor)):
+    """Add a new availability slot."""
+    doctor_uid = current_user["uid"]
+    slot_data = slot.model_dump(exclude={"id"})
+    slot_data["status"] = "free"  # Force status to free on creation
+    
+    # Create doc in sub-collection
+    doc_ref = db.collection("users").document(doctor_uid).collection("availability").add(slot_data)
+    
+    return {"message": "Availability slot added", "id": doc_ref[1].id}
+
+
+@router.delete("/availability/{slot_id}")
+async def delete_availability(slot_id: str, current_user: dict = Depends(get_current_doctor)):
+    """Delete an availability slot."""
+    doctor_uid = current_user["uid"]
+    slot_ref = db.collection("users").document(doctor_uid).collection("availability").document(slot_id)
+    
+    if not slot_ref.get().exists:
+        raise HTTPException(status_code=404, detail="Slot not found")
+        
+    slot_ref.delete()
+    return {"message": "Slot deleted successfully"}

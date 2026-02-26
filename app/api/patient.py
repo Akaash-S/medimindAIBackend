@@ -30,3 +30,27 @@ async def update_patient_profile(profile_data: dict, current_user: dict = Depend
     # Return the full merged document
     updated_doc = user_ref.get()
     return updated_doc.to_dict()
+
+
+@router.post("/assign-doctor")
+async def manual_assign_doctor(current_user: dict = Depends(get_current_patient)):
+    """Allow patient to manually trigger doctor assignment if not already linked."""
+    user_uid = current_user["uid"]
+    user_ref = db.collection("users").document(user_uid)
+    user_doc = user_ref.get()
+    
+    if not user_doc.exists:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    user_data = user_doc.to_dict()
+    if user_data.get("assigned_doctor"):
+        return {"message": "Doctor already assigned", "doctor_id": user_data["assigned_doctor"]}
+        
+    from app.services.assignment_service import assignment_service
+    doctor_id = await assignment_service.assign_doctor_to_patient(user_uid)
+    
+    if not doctor_id:
+        raise HTTPException(status_code=503, detail="No doctors available at the moment. Please try again later.")
+        
+    return {"message": "Doctor assigned successfully", "doctor_id": doctor_id}
+

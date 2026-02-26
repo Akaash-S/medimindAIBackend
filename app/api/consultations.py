@@ -140,11 +140,26 @@ async def get_recommendations(current_user: dict = Depends(get_current_user)):
     return results
 
 
+@router.get("/slots/{doctor_id}")
+async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_current_user)):
+    """Fetch available slots for a specific doctor."""
+    slots_ref = db.collection("users").document(doctor_id).collection("availability").where("status", "==", "free").stream()
+    slots = []
+    for doc in slots_ref:
+        slot = doc.to_dict()
+        slot["id"] = doc.id
+        slots.append(slot)
+    
+    # Sort by date and time
+    slots.sort(key=lambda x: (x["date"], x["start_time"]))
+    return slots
+
+
 @router.post("/book")
 async def book_consultation(body: dict, current_user: dict = Depends(get_current_user)):
     """
     Book a video consultation.  Creates an appointment + generates a Jitsi room.
-    Body: { recommendation_id?, doctor_id, date, time, reason? }
+    Body: { recommendation_id?, doctor_id, date, time, reason?, slot_id? }
     """
     uid = current_user["uid"]
     role = current_user.get("role", "patient")
@@ -156,9 +171,16 @@ async def book_consultation(body: dict, current_user: dict = Depends(get_current
     reason = body.get("reason", "Video consultation")
     recommendation_id = body.get("recommendation_id")
     report_id = body.get("report_id")
+    slot_id = body.get("slot_id")
 
     if not doctor_id or not date or not time_slot:
         raise HTTPException(status_code=400, detail="doctor_id, date, and time are required")
+
+    # Mark slot as booked if provided
+    if slot_id:
+        slot_ref = db.collection("users").document(doctor_id).collection("availability").document(slot_id)
+        if slot_ref.get().exists:
+            slot_ref.update({"status": "booked"})
 
     # Get names
     if role == "patient":
