@@ -382,6 +382,7 @@ async def get_room(consultation_id: str, current_user: dict = Depends(get_curren
         "room_name": data.get("room_name"),
         "room_url": data.get("room_url"),
         "status": data.get("status"),
+        "is_host": data.get("doctor_id") == uid,
         "report_id": report_id,
         "ai_summary": ai_summary,
     }
