@@ -591,3 +591,36 @@ async def delete_availability(slot_id: str, current_user: dict = Depends(get_cur
         
     slot_ref.delete()
     return {"message": "Slot deleted successfully"}
+
+
+# ==================== WORKING HOURS ====================
+
+
+from typing import List
+
+
+class WorkingDay(BaseModel):
+    day: str  # monday, tuesday, etc.
+    start: str  # HH:MM
+    end: str  # HH:MM
+    active: bool
+
+
+@router.get("/working-hours")
+async def get_working_hours(current_user: dict = Depends(get_current_doctor)):
+    """Fetch the doctor's weekly working hours."""
+    doctor_uid = current_user["uid"]
+    doc = db.collection("users").document(doctor_uid).get()
+    if not doc.exists:
+        return []
+    data = doc.to_dict()
+    return data.get("working_hours", [])
+
+
+@router.post("/working-hours")
+async def update_working_hours(hours: List[WorkingDay], current_user: dict = Depends(get_current_doctor)):
+    """Update the doctor's weekly working hours."""
+    doctor_uid = current_user["uid"]
+    hours_data = [h.model_dump() for h in hours]
+    db.collection("users").document(doctor_uid).update({"working_hours": hours_data})
+    return {"message": "Working hours updated", "working_hours": hours_data}

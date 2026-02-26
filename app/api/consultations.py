@@ -140,19 +140,89 @@ async def get_recommendations(current_user: dict = Depends(get_current_user)):
     return results
 
 
+from datetime import datetime, timedelta
+
+def get_slots_for_day(date_obj: datetime, start_str: str, end_str: str):
+    """Generate 30-min slots between start and end times."""
+    slots = []
+    try:
+        current_time = datetime.strptime(f"{date_obj.date()} {start_str}", "%Y-%m-%d %H:%M")
+        end_time = datetime.strptime(f"{date_obj.date()} {end_str}", "%Y-%m-%d %H:%M")
+        
+        while current_time + timedelta(minutes=30) <= end_time:
+            next_time = current_time + timedelta(minutes=30)
+            slots.append({
+                "date": date_obj.strftime("%Y-%m-%d"),
+                "start_time": current_time.strftime("%H:%M"),
+                "end_time": next_time.strftime("%H:%M")
+            })
+            current_time = next_time
+    except Exception as e:
+        print(f"Error generating slots: {e}")
+    return slots
+
+
 @router.get("/slots/{doctor_id}")
 async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_current_user)):
-    """Fetch available slots for a specific doctor."""
-    slots_ref = db.collection("users").document(doctor_id).collection("availability").where("status", "==", "free").stream()
-    slots = []
-    for doc in slots_ref:
-        slot = doc.to_dict()
-        slot["id"] = doc.id
-        slots.append(slot)
+    """Fetch available slots (manual + dynamic) for a specific doctor."""
+    # 1. Get manual slots (priority)
+    manual_slots_ref = db.collection("users").document(doctor_id).collection("availability").where("status", "==", "free").stream()
+    manual_slots = []
+    for doc in manual_slots_ref:
+        s = doc.to_dict()
+        s["id"] = doc.id
+        s["type"] = "manual"
+        manual_slots.append(s)
+        
+    # 2. Get Doctor profile for working hours
+    doc_ref = db.collection("users").document(doctor_id).get()
+    doctor_data = doc_ref.to_dict() or {}
+    working_hours = doctor_data.get("working_hours", [])
     
-    # Sort by date and time
-    slots.sort(key=lambda x: (x["date"], x["start_time"]))
-    return slots
+    # 3. Get existing appointments to filter
+    appointments_ref = db.collection("appointments").where("doctor_id", "==", doctor_id).where("status", "==", "upcoming").stream()
+    booked_times = []
+    for appt in appointments_ref:
+        ad = appt.to_dict()
+        booked_times.append({
+            "date": ad.get("date"),
+            "time": ad.get("time") # e.g. "09:00 - 09:30"
+        })
+        
+    dynamic_slots = []
+    if working_hours:
+        now = datetime.now()
+        for i in range(14): # Look ahead 14 days
+            day_obj = now + timedelta(days=i)
+            day_name = day_obj.strftime("%A").lower()
+            
+            # Find working config for this day
+            config = next((h for h in working_hours if h["day"] == day_name and h.get("active", False)), None)
+            if config:
+                day_candidates = get_slots_for_day(day_obj, config["start"], config["end"])
+                for candidate in day_candidates:
+                    # Filter if already exists in manual slots
+                    if any(s["date"] == candidate["date"] and s["start_time"] == candidate["start_time"] for s in manual_slots):
+                        continue
+                    
+                    # Filter if booked in appointments
+                    time_range = f"{candidate['start_time']} - {candidate['end_time']}"
+                    if any(bt["date"] == candidate["date"] and bt["time"] == time_range for bt in booked_times):
+                        continue
+                        
+                    # Filter if in the past
+                    slot_start_dt = datetime.strptime(f"{candidate['date']} {candidate['start_time']}", "%Y-%m-%d %H:%M")
+                    if slot_start_dt < now:
+                        continue
+                        
+                    candidate["id"] = f"dynamic_{candidate['date']}_{candidate['start_time']}"
+                    candidate["status"] = "free"
+                    candidate["type"] = "dynamic"
+                    dynamic_slots.append(candidate)
+                    
+    all_slots = manual_slots + dynamic_slots
+    all_slots.sort(key=lambda x: (x["date"], x["start_time"]))
+    return all_slots
 
 
 @router.post("/book")
