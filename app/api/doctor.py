@@ -112,6 +112,7 @@ async def get_doctor_patients(current_user: dict = Depends(get_current_doctor)):
             "risk": risk,
             "report_count": report_count,
             "last_report_date": last_report_date,
+            "bio": pd.get("bio", ""),
             "assigned_at": str(pd.get("assigned_at", "")) if pd.get("assigned_at") else None,
         })
     
@@ -229,6 +230,7 @@ async def get_patient_detail(patient_uid: str, current_user: dict = Depends(get_
         "reports": reports,
         "notes": notes,
         "prescriptions": prescriptions,
+        "bio": pd.get("bio", ""),
     }
 
 

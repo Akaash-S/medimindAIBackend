@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from app.core.firebase import db
 from app.core.security import get_current_patient, get_current_user
 
@@ -44,7 +44,11 @@ async def manual_assign_doctor(current_user: dict = Depends(get_current_patient)
         
     user_data = user_doc.to_dict()
     if user_data.get("assigned_doctor"):
-        return {"message": "Doctor already assigned", "doctor_id": user_data["assigned_doctor"]}
+        return {
+            "message": "Doctor already assigned", 
+            "doctor_id": user_data["assigned_doctor"],
+            "doctor_name": user_data.get("assigned_doctor_name")
+        }
         
     from app.services.assignment_service import assignment_service
     doctor_id = await assignment_service.assign_doctor_to_patient(user_uid)
