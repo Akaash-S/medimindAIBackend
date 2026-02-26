@@ -640,3 +640,34 @@ async def update_working_hours(hours: List[WorkingDay], current_user: dict = Dep
     hours_data = [h.model_dump() for h in hours]
     db.collection("users").document(doctor_uid).update({"working_hours": hours_data})
     return {"message": "Working hours updated", "working_hours": hours_data}
+
+
+# ==================== DAILY CAPACITY ====================
+
+
+@router.get("/daily-capacities")
+async def get_daily_capacities(current_user: dict = Depends(get_current_doctor)):
+    """Fetch the doctor's specific daily meeting limits."""
+    doctor_uid = current_user["uid"]
+    doc = db.collection("users").document(doctor_uid).get()
+    if not doc.exists:
+        return {}
+    data = doc.to_dict()
+    return data.get("daily_capacities", {})
+
+
+@router.post("/daily-capacities")
+async def update_daily_capacities(capacities: dict, current_user: dict = Depends(get_current_doctor)):
+    """Update the doctor's specific daily meeting limits. Format: { 'YYYY-MM-DD': count }"""
+    doctor_uid = current_user["uid"]
+    # Ensure keys are valid dates and values are ints
+    sanitized = {}
+    for k, v in capacities.items():
+        try:
+            # Basic validation
+            sanitized[str(k)] = int(v)
+        except (ValueError, TypeError):
+            continue
+            
+    db.collection("users").document(doctor_uid).update({"daily_capacities": sanitized})
+    return {"message": "Daily capacities updated", "daily_capacities": sanitized}

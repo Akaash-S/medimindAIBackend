@@ -174,20 +174,26 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
         s["type"] = "manual"
         manual_slots.append(s)
         
-    # 2. Get Doctor profile for working hours
+    # 2. Get Doctor profile for working hours and daily capacities
     doc_ref = db.collection("users").document(doctor_id).get()
     doctor_data = doc_ref.to_dict() or {}
     working_hours = doctor_data.get("working_hours", [])
+    daily_capacities = doctor_data.get("daily_capacities", {})
     
-    # 3. Get existing appointments to filter
+    # 3. Get existing appointments to filter and check capacity
     appointments_ref = db.collection("appointments").where("doctor_id", "==", doctor_id).where("status", "==", "upcoming").stream()
     booked_times = []
+    bookings_per_day = {} # { date: count }
+    
     for appt in appointments_ref:
         ad = appt.to_dict()
-        booked_times.append({
-            "date": ad.get("date"),
-            "time": ad.get("time") # e.g. "09:00 - 09:30"
-        })
+        dt = ad.get("date")
+        tm = ad.get("time") # e.g. "09:00 - 09:30"
+        
+        booked_times.append({"date": dt, "time": tm})
+        
+        if dt:
+            bookings_per_day[dt] = bookings_per_day.get(dt, 0) + 1
         
     dynamic_slots = []
     if working_hours:
@@ -195,7 +201,16 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
         for i in range(14): # Look ahead 14 days
             day_obj = now + timedelta(days=i)
             day_name = day_obj.strftime("%A").lower()
+            date_str = day_obj.strftime("%Y-%m-%d")
             
+            # Check Daily Capacity limit
+            daily_cap = daily_capacities.get(date_str)
+            current_bookings = bookings_per_day.get(date_str, 0)
+            
+            if daily_cap is not None and current_bookings >= daily_cap:
+                # Capacity reached for this day, skip generating any dynamic slots
+                continue
+                
             # Find working config for this day
             config = next((h for h in working_hours if h["day"] == day_name and h.get("active", False)), None)
             if config:
@@ -218,9 +233,20 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
                     candidate["id"] = f"dynamic_{candidate['date']}_{candidate['start_time']}"
                     candidate["status"] = "free"
                     candidate["type"] = "dynamic"
+                    # Add spots left info
+                    if daily_cap:
+                        candidate["spots_left"] = daily_cap - current_bookings
                     dynamic_slots.append(candidate)
                     
     all_slots = manual_slots + dynamic_slots
+    
+    # Final pass: supplement manual slots with spots_left if needed
+    for s in all_slots:
+        if "spots_left" not in s:
+            ds = s.get("date", "")
+            if ds in daily_capacities:
+                s["spots_left"] = daily_capacities[ds] - bookings_per_day.get(ds, 0)
+
     all_slots.sort(key=lambda x: (x["date"], x["start_time"]))
     return all_slots
 
