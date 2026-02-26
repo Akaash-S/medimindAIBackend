@@ -46,12 +46,25 @@ class AssignmentService:
             return None
             
         try:
+            # 1. Update patient profile for quick lookup
             user_ref = db.collection("users").document(patient_uid)
             user_ref.update({
                 "assigned_doctor": doctor_data["id"],
                 "assigned_doctor_name": doctor_data["full_name"],
                 "assigned_at": firestore.SERVER_TIMESTAMP
             })
+
+            # 2. Create formal relationship document
+            rel_id = f"{doctor_data['id']}_{patient_uid}"
+            db.collection("relationships").document(rel_id).set({
+                "id": rel_id,
+                "doctor_id": doctor_data["id"],
+                "patient_id": patient_uid,
+                "doctor_name": doctor_data["full_name"],
+                "status": "active",
+                "created_at": firestore.SERVER_TIMESTAMP
+            })
+            
             return doctor_data["id"]
         except Exception as e:
             print(f"Failed to update patient with assigned doctor: {e}")
