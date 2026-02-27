@@ -120,14 +120,53 @@ async def get_messages(conversation_id: str, current_user: dict = Depends(get_cu
     return results
 
 
+@router.post("/attachment-url")
+async def get_attachment_upload_url(
+    file_name: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Generate a signed upload URL for a chat attachment in Supabase.
+    """
+    from app.services.storage_service import storage_service
+    
+    attachment_id = str(uuid.uuid4())
+    file_extension = file_name.split(".")[-1]
+    file_path = f"chats/{current_user['uid']}/{attachment_id}.{file_extension}"
+    
+    try:
+        # Use a new bucket 'attachments' (ensure it exists in Supabase)
+        res = await storage_service.get_upload_url("attachments", file_path)
+        
+        upload_url = res.get("signedURL") or res.get("signed_url")
+        if not upload_url:
+            raise Exception("Failed to generate signed URL")
+            
+        return {
+            "upload_url": upload_url,
+            "file_path": file_path,
+            "attachment_id": attachment_id
+        }
+    except Exception as e:
+        print(f"Error generating attachment URL: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to generate upload URL. Error: {str(e)}"
+        )
+
+
 @router.post("/conversations/{conversation_id}/messages")
 async def send_message(conversation_id: str, message_data: dict, current_user: dict = Depends(get_current_user)):
-    """Send a message in a conversation. Sanitizes input to prevent XSS."""
+    """Send a message in a conversation. Supports optional media attachments."""
     uid = current_user["uid"]
     text = sanitize_text(message_data.get("text", ""))
+    file_url = message_data.get("file_url")
+    file_type = message_data.get("file_type")
+    file_name = message_data.get("file_name")
 
-    if not text:
-        raise HTTPException(status_code=400, detail="Message text is required")
+    # Allow message if it has text OR a file attachment
+    if not text and not file_url:
+        raise HTTPException(status_code=400, detail="Message text or attachment is required")
 
     # Verify the user is a participant
     conv_ref = db.collection("conversations").document(conversation_id)
@@ -148,6 +187,9 @@ async def send_message(conversation_id: str, message_data: dict, current_user: d
         "sender_name": sender_name,
         "sender_role": current_user.get("role", "patient"),
         "text": text,
+        "file_url": file_url,
+        "file_type": file_type,
+        "file_name": file_name,
         "created_at": firestore.SERVER_TIMESTAMP,
     }
 
@@ -155,8 +197,9 @@ async def send_message(conversation_id: str, message_data: dict, current_user: d
     conv_ref.collection("messages").document(msg_id).set(message)
 
     # Update conversation metadata
+    preview_text = text[:100] if text else "[Attachment]"
     conv_ref.update({
-        "last_message": text[:100],  # Truncate for preview
+        "last_message": preview_text,
         "last_message_at": firestore.SERVER_TIMESTAMP,
     })
 
