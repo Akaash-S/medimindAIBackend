@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.firebase import db, firestore
 from app.core.security import get_current_user
-import uuid
+import uuid, hashlib, time
 
 router = APIRouter()
 
@@ -68,6 +68,32 @@ async def create_appointment(appointment_data: dict, current_user: dict = Depend
             "notes": appointment_data.get("notes", ""),
             "created_at": firestore.SERVER_TIMESTAMP,
         }
+
+        # Generate consultation record for video appointments
+        if appt["type"] == "video":
+            consultation_id = str(uuid.uuid4())
+            room_hash = hashlib.sha256(f"{consultation_id}{int(time.time())}".encode()).hexdigest()[:12]
+            room_name = f"medimind-{room_hash}"
+            room_url = f"https://meet.jit.si/{room_name}"
+
+            appt.update({
+                "consultation_id": consultation_id,
+                "room_name": room_name,
+                "room_url": room_url,
+            })
+
+            # Store consultation
+            db.collection("consultations").document(consultation_id).set({
+                "id": consultation_id,
+                "appointment_id": appt_id,
+                "patient_id": patient_id,
+                "doctor_id": uid,
+                "report_id": appointment_data.get("report_id", ""),
+                "room_name": room_name,
+                "room_url": room_url,
+                "status": "scheduled",
+                "created_at": firestore.SERVER_TIMESTAMP,
+            })
     else:
         # Patient creating appointment
         appt = {
@@ -85,6 +111,32 @@ async def create_appointment(appointment_data: dict, current_user: dict = Depend
             "notes": "",
             "created_at": firestore.SERVER_TIMESTAMP,
         }
+
+        # Generate consultation record for video appointments
+        if appt["type"] == "video":
+            consultation_id = str(uuid.uuid4())
+            room_hash = hashlib.sha256(f"{consultation_id}{int(time.time())}".encode()).hexdigest()[:12]
+            room_name = f"medimind-{room_hash}"
+            room_url = f"https://meet.jit.si/{room_name}"
+
+            appt.update({
+                "consultation_id": consultation_id,
+                "room_name": room_name,
+                "room_url": room_url,
+            })
+
+            # Store consultation
+            db.collection("consultations").document(consultation_id).set({
+                "id": consultation_id,
+                "appointment_id": appt_id,
+                "patient_id": uid,
+                "doctor_id": appointment_data.get("doctor_id", ""),
+                "report_id": appointment_data.get("report_id", ""),
+                "room_name": room_name,
+                "room_url": room_url,
+                "status": "scheduled",
+                "created_at": firestore.SERVER_TIMESTAMP,
+            })
 
     db.collection("appointments").document(appt_id).set(appt)
 
