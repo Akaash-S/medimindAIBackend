@@ -58,3 +58,28 @@ async def manual_assign_doctor(current_user: dict = Depends(get_current_patient)
         
     return {"message": "Doctor assigned successfully", "doctor_id": doctor_id}
 
+
+@router.get("/my-doctor")
+async def get_my_doctor(current_user: dict = Depends(get_current_patient)):
+    """Fetch the full profile of the doctor assigned to the current patient."""
+    doctor_id = current_user.get("assigned_doctor")
+    if not doctor_id:
+        return {"doctor": None, "message": "No doctor assigned yet"}
+        
+    doc_ref = db.collection("users").document(doctor_id).get()
+    if not doc_ref.exists:
+        raise HTTPException(status_code=404, detail="Assigned doctor profile not found")
+        
+    doctor_data = doc_ref.to_dict()
+    # Filter sensitive data
+    return {
+        "uid": doctor_id,
+        "full_name": doctor_data.get("full_name", "Unknown"),
+        "email": doctor_data.get("email"),
+        "specialization": doctor_data.get("specialization"),
+        "bio": doctor_data.get("bio"),
+        "photo_url": doctor_data.get("photo_url"),
+        "phone": doctor_data.get("phone"),
+        "clinic_address": doctor_data.get("clinic_address"),
+        "affiliation": doctor_data.get("affiliation"),
+    }

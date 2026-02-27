@@ -48,6 +48,9 @@ class AssignmentService:
         try:
             # 1. Update patient profile for quick lookup
             user_ref = db.collection("users").document(patient_uid)
+            user_doc = user_ref.get()
+            user_data = user_doc.to_dict() if user_doc.exists else {}
+            
             user_ref.update({
                 "assigned_doctor": doctor_data["id"],
                 "assigned_doctor_name": doctor_data["full_name"],
@@ -64,6 +67,21 @@ class AssignmentService:
                 "status": "active",
                 "created_at": firestore.SERVER_TIMESTAMP
             })
+
+            # 3. Auto-initialize chat
+            try:
+                from app.services.chat_service import chat_service
+                patient_name = user_data.get("full_name") or user_data.get("name", "Patient")
+                await chat_service.initialize_conversation(
+                    participant_1_id=patient_uid,
+                    participant_2_id=doctor_data["id"],
+                    p1_name=patient_name,
+                    p1_role="patient",
+                    p2_name=doctor_data["full_name"],
+                    p2_role="doctor"
+                )
+            except Exception as chat_err:
+                print(f"Auto-chat initialization failed: {chat_err}")
             
             return doctor_data["id"]
         except Exception as e:
