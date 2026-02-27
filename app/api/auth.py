@@ -10,6 +10,7 @@ class UserState(BaseModel):
     uid: str
     email: str
     role: Optional[str] = None
+    profile_complete: bool = False
     assigned_doctor_name: Optional[str] = None
     two_factor_enabled: bool = False
 
