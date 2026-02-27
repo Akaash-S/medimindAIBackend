@@ -7,6 +7,12 @@ class ChatService:
         """
         Creates a conversation between two users if it doesn't already exist.
         """
+        # Sanitize names and roles
+        p1_name = p1_name or "Patient"
+        p1_role = p1_role or "patient"
+        p2_name = p2_name or "Doctor"
+        p2_role = p2_role or "doctor"
+
         # Check if conversation already exists
         existing = db.collection("conversations") \
             .where("participant_ids", "array_contains", participant_1_id) \
