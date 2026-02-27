@@ -10,19 +10,24 @@ class UserState(BaseModel):
     uid: str
     email: str
     role: Optional[str] = None
-    profile_complete: bool = False
-    assigned_doctor: Optional[str] = None
     assigned_doctor_name: Optional[str] = None
+    two_factor_enabled: bool = False
 
 @router.get("/me", response_model=UserState)
 async def get_my_state(current_user: dict = Depends(get_current_user)):
+    security_doc = db.collection("user_security").document(current_user["uid"]).get()
+    two_factor_enabled = False
+    if security_doc.exists:
+        two_factor_enabled = security_doc.to_dict().get("two_factor_enabled", False)
+
     return {
         "uid": current_user.get("uid"),
         "email": current_user.get("email"),
         "role": current_user.get("role"),
         "profile_complete": current_user.get("profile_complete", False),
         "assigned_doctor": current_user.get("assigned_doctor"),
-        "assigned_doctor_name": current_user.get("assigned_doctor_name")
+        "assigned_doctor_name": current_user.get("assigned_doctor_name"),
+        "two_factor_enabled": two_factor_enabled
     }
 
 @router.patch("/role")

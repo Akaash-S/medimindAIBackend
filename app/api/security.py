@@ -178,6 +178,76 @@ async def validate_2fa_code(body: dict, current_user: dict = Depends(get_current
     return {"valid": False, "message": "Invalid code"}
 
 
+@router.post("/security/password")
+async def set_medimind_password(body: dict, current_user: dict = Depends(get_current_user)):
+    """Set or update the custom MediMind password (used for 2FA)."""
+    uid = current_user["uid"]
+    password = body.get("password")
+    current_password = body.get("current_password")
+    
+    if not password or len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+    ref = db.collection("user_security").document(uid)
+    doc = ref.get()
+    
+    data = doc.to_dict() if doc.exists else {}
+
+    if doc.exists:
+        stored_hash = data.get("medimind_password_hash")
+        salt = data.get("medimind_password_salt")
+
+        # If a password already exists, require the current password
+        if stored_hash and salt:
+            if not current_password:
+                raise HTTPException(status_code=400, detail="Current password is required to set a new password")
+            
+            current_hash = hashlib.sha256((current_password + salt).encode()).hexdigest()
+            if current_hash != stored_hash:
+                raise HTTPException(status_code=401, detail="Incorrect current password")
+
+    new_salt = secrets.token_hex(16)
+    hashed_password = hashlib.sha256((password + new_salt).encode()).hexdigest()
+
+    ref.set({
+        "medimind_password_hash": hashed_password,
+        "medimind_password_salt": new_salt,
+        "updated_at": firestore.SERVER_TIMESTAMP
+    }, merge=True)
+
+    action = "Updated" if data.get("medimind_password_hash") else "Set"
+    _log_activity(uid, "security", f"{action} custom MediMind password")
+    return {"message": "Password set successfully"}
+
+
+@router.post("/security/2fa/verify-password")
+async def verify_medimind_password(body: dict, current_user: dict = Depends(get_current_user)):
+    """Verify the custom MediMind password (step 1 of 2FA)."""
+    uid = current_user["uid"]
+    password = body.get("password")
+
+    if not password:
+        raise HTTPException(status_code=400, detail="Password is required")
+
+    ref = db.collection("user_security").document(uid)
+    doc = ref.get()
+    if not doc.exists:
+        raise HTTPException(status_code=400, detail="Security profile not found")
+
+    data = doc.to_dict()
+    stored_hash = data.get("medimind_password_hash")
+    salt = data.get("medimind_password_salt")
+
+    if not stored_hash or not salt:
+        raise HTTPException(status_code=400, detail="Password not set for this account")
+
+    current_hash = hashlib.sha256((password + salt).encode()).hexdigest()
+    if current_hash != stored_hash:
+        raise HTTPException(status_code=401, detail="Incorrect password")
+
+    return {"valid": True}
+
+
 # ===================== Recovery Codes =====================
 
 @router.post("/security/2fa/recovery-codes")
@@ -275,13 +345,15 @@ async def get_security_settings(current_user: dict = Depends(get_current_user)):
         "allow_ai_analysis": True,
         "anonymous_research_data": False,
         "recovery_codes_count": 0,
+        "has_medimind_password": False,
     }
 
     if doc.exists:
         data = doc.to_dict()
+        defaults["has_medimind_password"] = "medimind_password_hash" in data
         # Never expose secret or hashed codes via GET
         safe_data = {k: v for k, v in data.items()
-                     if k not in ("totp_secret", "recovery_codes_hashed")}
+                     if k not in ("totp_secret", "recovery_codes_hashed", "medimind_password_hash", "medimind_password_salt")}
         return {**defaults, **safe_data}
     return defaults
 
