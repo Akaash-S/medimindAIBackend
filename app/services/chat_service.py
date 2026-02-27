@@ -32,6 +32,19 @@ class ChatService:
         }
 
         db.collection("conversations").document(conv_id).set(conversation)
+
+        # Add initial "system" message to the subcollection
+        msg_id = f"init_{conv_id}"
+        initial_msg = {
+            "id": msg_id,
+            "sender_id": "system",
+            "sender_name": "MediMind AI",
+            "sender_role": "system",
+            "text": f"Dr. {p2_name} has been assigned to {p1_name}'s care profile. You can now communicate securely.",
+            "created_at": firestore.SERVER_TIMESTAMP,
+        }
+        db.collection("conversations").document(conv_id).collection("messages").document(msg_id).set(initial_msg)
+
         return conv_id
 
 chat_service = ChatService()
