@@ -1,5 +1,4 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api import patient, doctor, reports, appointments, messages, health, auth, security, consultations
 
@@ -9,15 +8,9 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
 )
 
-# CORS — always enabled so error/404 responses still include CORS headers
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=([str(o) for o in settings.BACKEND_CORS_ORIGINS]
-                   if settings.BACKEND_CORS_ORIGINS else ["*"]),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS is handled entirely by the Nginx gateway (nginx.conf).
+# Do NOT add CORSMiddleware here — it would duplicate the
+# Access-Control-Allow-Origin header, which browsers reject.
 
 @app.get("/")
 async def root():
