@@ -1,22 +1,60 @@
 version: '3.8'
 
+# ─────────────────────────────────────────────────────────────────────────────
+# MediMind AI — Production Docker Compose
+# Architecture:
+#   nginx  → public-facing (ports 80/443), handles CORS, proxies to backend
+#   backend → internal only (not exposed to host), FastAPI + Gunicorn
+# ─────────────────────────────────────────────────────────────────────────────
+
 services:
+
+  # ── FastAPI Application ────────────────────────────────────────────────────
   backend:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
+    # NOTE: No `ports` here — backend is internal only, reachable via nginx
+    expose:
+      - "8000"
     env_file:
       - .env
     restart: always
+    networks:
+      - medimind-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 15s
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ── Nginx Gateway (CORS + Reverse Proxy) ───────────────────────────────────
+  nginx:
+    image: nginx:stable-alpine
+    ports:
+      - "80:80"
+      - "443:443"       # used after SSL cert is mounted
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro    # mount SSL certs here (Let's Encrypt / manual)
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: always
+    networks:
+      - medimind-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+networks:
+  medimind-net:
+    driver: bridge
