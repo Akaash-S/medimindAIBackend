@@ -45,15 +45,15 @@ async def get_report_upload_url(
             print(f"CRITICAL: {error_msg}")
             raise Exception(error_msg)
             
-        # Try both camelCase and snake_case
-        upload_url = res.get("signedURL") or res.get("signed_url")
+        # storage_service normalizes the key to 'signedURL'
+        upload_url = res.get("signedURL") or res.get("signed_url") or res.get("upload_url")
         
         if not upload_url:
-            error_msg = f"No 'signedURL' or 'signed_url' found in Supabase response: {res}"
+            error_msg = f"No signed URL key found in Supabase response: {res}"
             print(f"CRITICAL: {error_msg}")
             raise Exception(error_msg)
             
-        final_file_path = res.get("file_path") or file_path
+        final_file_path = res.get("file_path") or res.get("path") or file_path
     except Exception as e:
         print(f"CRITICAL: Failed to generate upload URL for report {report_id}: {str(e)}")
         # Delete the pending doc since we can't upload
@@ -105,9 +105,13 @@ async def get_reports(current_user: dict = Depends(get_current_user)):
     results = []
     for doc in docs:
         data = doc.to_dict()
-        # Convert timestamp to datetime for pydantic
-        if "created_at" in data and data["created_at"]:
-             data["created_at"] = data["created_at"]
+        # Convert Firestore DatetimeWithNanoseconds → Python datetime for Pydantic
+        for ts_field in ("created_at", "processed_at"):
+            if ts_field in data and data[ts_field] is not None:
+                try:
+                    data[ts_field] = data[ts_field].replace(nanosecond=0) if hasattr(data[ts_field], "replace") else data[ts_field]
+                except Exception:
+                    data[ts_field] = None
         results.append(data)
         
     return results
