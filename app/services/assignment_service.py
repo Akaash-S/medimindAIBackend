@@ -9,13 +9,21 @@ class AssignmentService:
         Returns a dict with doctor 'id' and 'full_name'.
         """
         try:
-            # 1. Get all doctors with complete profiles
+            # 1. Prefer doctors with complete profiles; fall back to ALL doctors
+            #    so assignment works even when doctors haven't fully filled their settings.
             doctors_ref = db.collection("users").where("role", "==", "doctor").where("profile_complete", "==", True).stream()
             doctors = [doc.to_dict() | {"id": doc.id} for doc in doctors_ref]
-            
+
+            if not doctors:
+                # Fallback: any verified doctor (no profile_complete filter)
+                print("No profile_complete doctors found – falling back to all doctors with role=doctor")
+                doctors_ref = db.collection("users").where("role", "==", "doctor").stream()
+                doctors = [doc.to_dict() | {"id": doc.id} for doc in doctors_ref]
+
             if not doctors:
                 print("No active doctors found in the system.")
                 return None
+
                 
             # 2. Count patients for each doctor
             doctor_loads = []
