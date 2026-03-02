@@ -9,32 +9,120 @@ router = APIRouter()
 @router.get("/doctor/{doctor_id}/slots")
 async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_current_patient)):
     """
-    Patient-accessible endpoint: returns the free availability slots for the
-    doctor assigned to this patient. Verifies the patient is actually assigned
-    to the requested doctor before returning data.
-    """
-    patient_uid = current_user["uid"]
+    Patient-accessible endpoint: returns free consultation slots for the patient's
+    assigned doctor.
 
-    # Security: ensure patient is assigned to this doctor
+    Slot sources (merged, de-duped, sorted by date+time):
+    1. Manual one-off slots from users/{doctor_id}/availability (status=="free")
+    2. Auto-generated slots from the doctor's weekly working_hours for the next 14 days,
+       with 30-minute intervals — excluding dates that already have appointments.
+    """
+    from datetime import date, timedelta, datetime
+
+    # Security: patient must be assigned to this doctor
     if current_user.get("assigned_doctor") != doctor_id:
         raise HTTPException(status_code=403, detail="You are not assigned to this doctor")
 
+    # ── 1. Manual one-off slots ──────────────────────────────────────────────
+    manual_slots = []
     slots_ref = (
         db.collection("users")
         .document(doctor_id)
         .collection("availability")
         .stream()
     )
-    slots = []
     for doc in slots_ref:
         slot = doc.to_dict()
         if slot.get("status", "free") == "free":
             slot["id"] = doc.id
-            slots.append(slot)
+            slot["source"] = "manual"
+            manual_slots.append(slot)
 
-    # Sort by date then time
-    slots.sort(key=lambda x: (x.get("date", ""), x.get("start_time", "")))
-    return slots
+    # ── 2. Auto-generate from weekly working hours ───────────────────────────
+    doctor_doc = db.collection("users").document(doctor_id).get()
+    working_hours: list = []
+    consultation_duration = 30  # minutes
+    if doctor_doc.exists:
+        data = doctor_doc.to_dict()
+        working_hours = data.get("working_hours", [])
+        # Support custom duration stored as string or int
+        try:
+            consultation_duration = int(data.get("consultation_duration", 30))
+        except (ValueError, TypeError):
+            consultation_duration = 30
+
+    # Build a map: day_name → {start, end} for active days
+    day_schedule: dict = {}
+    for wh in working_hours:
+        if wh.get("active") and wh.get("day") and wh.get("start") and wh.get("end"):
+            day_schedule[wh["day"].lower()] = {
+                "start": wh["start"],  # "HH:MM"
+                "end": wh["end"],
+            }
+
+    # Get existing UPCOMING appointments for this doctor (to block those times)
+    existing_times: set = set()
+    try:
+        appt_docs = (
+            db.collection("appointments")
+            .where("doctor_id", "==", doctor_id)
+            .where("status", "==", "upcoming")
+            .stream()
+        )
+        for appt in appt_docs:
+            ad = appt.to_dict()
+            if ad.get("date") and ad.get("time"):
+                existing_times.add(f"{ad['date']}_{ad['time']}")
+    except Exception:
+        pass  # Non-blocking
+
+    # Day-name mapping (Python weekday: 0=Mon, 6=Sun)
+    WEEKDAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+    generated_slots = []
+    today = date.today()
+    for delta in range(0, 14):
+        day = today + timedelta(days=delta)
+        day_name = WEEKDAY_NAMES[day.weekday()]
+        if day_name not in day_schedule:
+            continue
+
+        sched = day_schedule[day_name]
+        try:
+            start_dt = datetime.strptime(f"{day.isoformat()} {sched['start']}", "%Y-%m-%d %H:%M")
+            end_dt = datetime.strptime(f"{day.isoformat()} {sched['end']}", "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+
+        current_dt = start_dt
+        while current_dt + timedelta(minutes=consultation_duration) <= end_dt:
+            slot_start = current_dt.strftime("%H:%M")
+            slot_end = (current_dt + timedelta(minutes=consultation_duration)).strftime("%H:%M")
+            time_key = f"{day.isoformat()}_{slot_start} - {slot_end}"
+
+            if time_key not in existing_times:
+                generated_slots.append({
+                    "id": f"gen_{day.isoformat()}_{slot_start}",
+                    "date": day.isoformat(),
+                    "start_time": slot_start,
+                    "end_time": slot_end,
+                    "status": "free",
+                    "source": "schedule",
+                })
+            current_dt += timedelta(minutes=consultation_duration)
+
+    # ── 3. Merge, de-dupe by (date, start_time), sort ───────────────────────
+    seen = set()
+    all_slots = []
+    for slot in manual_slots + generated_slots:
+        key = (slot.get("date", ""), slot.get("start_time", ""))
+        if key not in seen:
+            seen.add(key)
+            all_slots.append(slot)
+
+    all_slots.sort(key=lambda x: (x.get("date", ""), x.get("start_time", "")))
+    return all_slots
+
 
 
 @router.post("/book")
