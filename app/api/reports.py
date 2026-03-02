@@ -101,19 +101,18 @@ async def trigger_report_processing(
 async def get_reports(current_user: dict = Depends(get_current_user)):
     reports_ref = db.collection("reports").where("user_id", "==", current_user["uid"])
     docs = reports_ref.stream()
-    
+
     results = []
     for doc in docs:
         data = doc.to_dict()
-        # Convert Firestore DatetimeWithNanoseconds → Python datetime for Pydantic
+        # Firestore DatetimeWithNanoseconds is a datetime subclass — Pydantic
+        # handles it fine. Just guard against None (SERVER_TIMESTAMP not yet resolved).
         for ts_field in ("created_at", "processed_at"):
-            if ts_field in data and data[ts_field] is not None:
-                try:
-                    data[ts_field] = data[ts_field].replace(nanosecond=0) if hasattr(data[ts_field], "replace") else data[ts_field]
-                except Exception:
-                    data[ts_field] = None
+            val = data.get(ts_field)
+            if val is None:
+                data[ts_field] = None
         results.append(data)
-        
+
     return results
 
 @router.delete("/{report_id}")
