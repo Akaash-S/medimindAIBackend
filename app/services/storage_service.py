@@ -23,7 +23,7 @@ class StorageService:
         """
         url = f"{self.base_url}/storage/v1/object/sign/upload/{bucket}/{path}"
         async with httpx.AsyncClient() as client:
-            resp = await client.post(url, headers=self.headers, timeout=15)
+            resp = await client.post(url, headers={**self.headers, "Content-Type": "application/json"}, json={}, timeout=15)
 
         print(f"Supabase create_signed_upload_url response [{resp.status_code}]: {resp.text[:300]}")
 
