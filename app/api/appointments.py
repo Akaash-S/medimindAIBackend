@@ -190,8 +190,30 @@ async def book_appointment(booking_data: dict, current_user: dict = Depends(get_
         "created_at": firestore.SERVER_TIMESTAMP,
     })
 
-    # Mark the availability slot as booked if slot_id provided
-    if slot_id:
+    # ── Persist booked slot to availability sub-collection ──────────────────
+    slot_date = booking_data.get("date", "")
+    slot_time_start = booking_data.get("time", "").split(" - ")[0] if " - " in booking_data.get("time", "") else ""
+    slot_time_end = booking_data.get("time", "").split(" - ")[1] if " - " in booking_data.get("time", "") else ""
+
+    if slot_id and slot_id.startswith("gen_"):
+        # Generated slot — write it to DB as booked so future /slots calls exclude it
+        try:
+            db.collection("users").document(doctor_id).collection("availability").document(slot_id).set({
+                "id": slot_id,
+                "date": slot_date,
+                "start_time": slot_time_start,
+                "end_time": slot_time_end,
+                "status": "booked",
+                "booked_by": uid,
+                "appointment_id": appt_id,
+                "source": "schedule",
+                "created_at": firestore.SERVER_TIMESTAMP,
+            })
+        except Exception as e:
+            print(f"Failed to persist generated slot as booked: {e}")
+
+    elif slot_id:
+        # Manual one-off slot — update existing record
         try:
             slot_ref = (
                 db.collection("users")
@@ -200,9 +222,13 @@ async def book_appointment(booking_data: dict, current_user: dict = Depends(get_
                 .document(slot_id)
             )
             if slot_ref.get().exists:
-                slot_ref.update({"status": "booked"})
+                slot_ref.update({
+                    "status": "booked",
+                    "booked_by": uid,
+                    "appointment_id": appt_id,
+                })
         except Exception as e:
-            print(f"Failed to mark slot as booked: {e}")
+            print(f"Failed to mark manual slot as booked: {e}")
 
     return {
         "message": "Appointment booked successfully",
@@ -213,6 +239,7 @@ async def book_appointment(booking_data: dict, current_user: dict = Depends(get_
         "time": appt["time"],
         "doctor_name": doctor_data.get("full_name", "Doctor"),
     }
+
 
 
 @router.get("/")

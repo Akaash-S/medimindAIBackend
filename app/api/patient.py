@@ -34,29 +34,65 @@ async def update_patient_profile(profile_data: dict, current_user: dict = Depend
 
 @router.post("/assign-doctor")
 async def manual_assign_doctor(current_user: dict = Depends(get_current_patient)):
-    """Allow patient to manually trigger doctor assignment if not already linked."""
+    """
+    Assign (or re-assign) a doctor to the patient using the smart algorithm:
+    - Specialization matching against patient conditions
+    - Availability check (working_hours or free slots)
+    - Least-loaded selection (fewest patients)
+    Fresh search every time — does NOT skip if already assigned.
+    """
     user_uid = current_user["uid"]
     user_ref = db.collection("users").document(user_uid)
-    user_doc = user_ref.get()
-    
-    if not user_doc.exists:
+
+    if not user_ref.get().exists:
         raise HTTPException(status_code=404, detail="User not found")
-        
-    user_data = user_doc.to_dict()
-    if user_data.get("assigned_doctor"):
-        return {
-            "message": "Doctor already assigned", 
-            "doctor_id": user_data["assigned_doctor"],
-            "doctor_name": user_data.get("assigned_doctor_name")
-        }
-        
+
     from app.services.assignment_service import assignment_service
     doctor_id = await assignment_service.assign_doctor_to_patient(user_uid)
-    
+
     if not doctor_id:
-        raise HTTPException(status_code=503, detail="No doctors available at the moment. Please try again later.")
-        
-    return {"message": "Doctor assigned successfully", "doctor_id": doctor_id}
+        raise HTTPException(
+            status_code=503,
+            detail="No doctors available at the moment. Please try again later."
+        )
+
+    # Return updated doctor info
+    doctor_doc = db.collection("users").document(doctor_id).get()
+    doctor_data = doctor_doc.to_dict() if doctor_doc.exists else {}
+    return {
+        "message": "Doctor assigned successfully",
+        "doctor_id": doctor_id,
+        "doctor_name": doctor_data.get("full_name", "Unknown"),
+        "specialization": doctor_data.get("specialization", ""),
+    }
+
+
+@router.post("/reassign-doctor")
+async def reassign_doctor(current_user: dict = Depends(get_current_patient)):
+    """
+    Force a fresh doctor re-assignment, clearing any previous assignment.
+    Triggered per-report when the patient explicitly requests a different doctor.
+    Uses the full smart algorithm (specialization + availability + LLA).
+    """
+    user_uid = current_user["uid"]
+
+    from app.services.assignment_service import assignment_service
+    doctor_id = await assignment_service.reassign_doctor(user_uid)
+
+    if not doctor_id:
+        raise HTTPException(
+            status_code=503,
+            detail="No doctors available for re-assignment. Please try again later."
+        )
+
+    doctor_doc = db.collection("users").document(doctor_id).get()
+    doctor_data = doctor_doc.to_dict() if doctor_doc.exists else {}
+    return {
+        "message": "Doctor re-assigned successfully",
+        "doctor_id": doctor_id,
+        "doctor_name": doctor_data.get("full_name", "Unknown"),
+        "specialization": doctor_data.get("specialization", ""),
+    }
 
 
 @router.get("/my-doctor")
@@ -71,7 +107,6 @@ async def get_my_doctor(current_user: dict = Depends(get_current_patient)):
         raise HTTPException(status_code=404, detail="Assigned doctor profile not found")
         
     doctor_data = doc_ref.to_dict()
-    # Filter sensitive data
     return {
         "uid": doctor_id,
         "full_name": doctor_data.get("full_name", "Unknown"),
@@ -82,4 +117,5 @@ async def get_my_doctor(current_user: dict = Depends(get_current_patient)):
         "phone": doctor_data.get("phone"),
         "clinic_address": doctor_data.get("clinic_address"),
         "affiliation": doctor_data.get("affiliation"),
+        "experience": doctor_data.get("experience"),
     }
