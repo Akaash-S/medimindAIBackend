@@ -88,11 +88,16 @@ async def get_doctor_patients(current_user: dict = Depends(get_current_doctor)):
             if ts:
                 last_report_date = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
             
-            # Get AI analysis health score if available
-            ai = latest.get("ai_analysis", {})
-            if isinstance(ai, dict):
-                health_score = ai.get("health_score", 75)
-                last_report_risk = ai.get("risk_level")
+            # Read top-level fields written by report_service (analysis, risk_level, health_score)
+            top_risk = latest.get("risk_level")
+            top_health = latest.get("health_score")
+            ai = latest.get("analysis", {})
+            if isinstance(ai, dict) and ai:
+                health_score = top_health or ai.get("health_score", 75)
+                last_report_risk = top_risk or ai.get("risk_level")
+            elif top_health or top_risk:
+                health_score = top_health or 75
+                last_report_risk = top_risk
         
         conditions = pd.get("conditions", "")
         risk = last_report_risk or _compute_risk(conditions, health_score)
@@ -155,12 +160,13 @@ async def get_patient_detail(patient_uid: str, current_user: dict = Depends(get_
     health_score = 75
     for i, rdoc in enumerate(report_docs):
         rd = rdoc.to_dict()
-        ai = rd.get("ai_analysis", {})
+        # report_service writes to top-level fields AND nested 'analysis' dict
+        ai = rd.get("analysis", {})
         has_ai = bool(ai) and isinstance(ai, dict)
-        risk = ai.get("risk_level", "low") if has_ai else "low"
+        risk = rd.get("risk_level") or (ai.get("risk_level", "low") if has_ai else "low")
         
-        if i == 0 and has_ai:
-            health_score = ai.get("health_score", 75)
+        if i == 0:
+            health_score = rd.get("health_score") or (ai.get("health_score", 75) if has_ai else 75)
         
         ts = rd.get("created_at")
         created_at = ts.isoformat() if ts and hasattr(ts, "isoformat") else str(ts) if ts else None
@@ -171,7 +177,7 @@ async def get_patient_detail(patient_uid: str, current_user: dict = Depends(get_
             "status": rd.get("status", "pending"),
             "created_at": created_at,
             "risk_level": risk,
-            "has_ai": has_ai,
+            "has_ai": has_ai or bool(rd.get("risk_level")),
         })
     
     # Get doctor notes (without order_by to avoid composite index requirement)
@@ -397,18 +403,17 @@ async def get_doctor_reports(current_user: dict = Depends(get_current_doctor)):
         
         for rdoc in reports_ref.stream():
             rd = rdoc.to_dict()
-            ai = rd.get("ai_analysis", {})
+            # report_service writes to top-level fields AND nested 'analysis' dict
+            ai = rd.get("analysis", {})
             has_ai = bool(ai) and isinstance(ai, dict)
-            risk_level = "low"
-            health_score = None
-            ai_summary = ""
-            extracted_values = []
+            top_risk = rd.get("risk_level")
+            top_score = rd.get("health_score")
+            top_summary = rd.get("summary", "")
             
-            if has_ai:
-                risk_level = ai.get("risk_level", "low")
-                health_score = ai.get("health_score")
-                ai_summary = ai.get("summary", "")
-                extracted_values = ai.get("extracted_values", [])
+            risk_level = top_risk or (ai.get("risk_level", "low") if has_ai else "low")
+            health_score = top_score or (ai.get("health_score") if has_ai else None)
+            ai_summary = top_summary or (ai.get("summary", "") if has_ai else "")
+            extracted_values = ai.get("extracted_values", []) if has_ai else []
             
             ts = rd.get("created_at")
             created_at = ts.isoformat() if ts and hasattr(ts, "isoformat") else str(ts) if ts else None
@@ -468,8 +473,12 @@ async def get_report_detail(report_id: str, current_user: dict = Depends(get_cur
         raise HTTPException(status_code=403, detail="Not authorized to view this report")
     
     pd = patient_doc.to_dict()
-    ai = rd.get("ai_analysis", {})
+    # report_service writes to top-level fields AND nested 'analysis' dict
+    ai = rd.get("analysis", {})
     has_ai = bool(ai) and isinstance(ai, dict)
+    top_risk = rd.get("risk_level")
+    top_score = rd.get("health_score")
+    top_summary = rd.get("summary", "")
     
     ts = rd.get("created_at")
     created_at = ts.isoformat() if ts and hasattr(ts, "isoformat") else str(ts) if ts else None
@@ -485,10 +494,10 @@ async def get_report_detail(report_id: str, current_user: dict = Depends(get_cur
         "status": rd.get("status", "pending"),
         "reviewed": rd.get("reviewed", False),
         "created_at": created_at,
-        "risk_level": ai.get("risk_level", "low") if has_ai else "low",
-        "health_score": ai.get("health_score") if has_ai else None,
-        "has_ai": has_ai,
-        "ai_summary": ai.get("summary", "") if has_ai else "",
+        "risk_level": top_risk or (ai.get("risk_level", "low") if has_ai else "low"),
+        "health_score": top_score or (ai.get("health_score") if has_ai else None),
+        "has_ai": has_ai or bool(top_risk),
+        "ai_summary": top_summary or (ai.get("summary", "") if has_ai else ""),
         "extracted_values": ai.get("extracted_values", []) if has_ai else [],
         "recommendations": ai.get("recommendations", []) if has_ai else [],
     }

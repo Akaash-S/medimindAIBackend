@@ -1,9 +1,131 @@
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.firebase import db, firestore
-from app.core.security import get_current_user
+from app.core.security import get_current_user, get_current_patient
 import uuid, hashlib, time
 
 router = APIRouter()
+
+
+@router.get("/doctor/{doctor_id}/slots")
+async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_current_patient)):
+    """
+    Patient-accessible endpoint: returns the free availability slots for the
+    doctor assigned to this patient. Verifies the patient is actually assigned
+    to the requested doctor before returning data.
+    """
+    patient_uid = current_user["uid"]
+
+    # Security: ensure patient is assigned to this doctor
+    if current_user.get("assigned_doctor") != doctor_id:
+        raise HTTPException(status_code=403, detail="You are not assigned to this doctor")
+
+    slots_ref = (
+        db.collection("users")
+        .document(doctor_id)
+        .collection("availability")
+        .stream()
+    )
+    slots = []
+    for doc in slots_ref:
+        slot = doc.to_dict()
+        if slot.get("status", "free") == "free":
+            slot["id"] = doc.id
+            slots.append(slot)
+
+    # Sort by date then time
+    slots.sort(key=lambda x: (x.get("date", ""), x.get("start_time", "")))
+    return slots
+
+
+@router.post("/book")
+async def book_appointment(booking_data: dict, current_user: dict = Depends(get_current_patient)):
+    """
+    Patient-friendly appointment booking shorthand.
+    Requires: doctor_id, date, time, reason. Optional: slot_id, report_id.
+    """
+    uid = current_user["uid"]
+    doctor_id = booking_data.get("doctor_id", "")
+    slot_id = booking_data.get("slot_id")
+
+    if not doctor_id:
+        raise HTTPException(status_code=400, detail="doctor_id is required")
+
+    # Verify patient is assigned to this doctor
+    if current_user.get("assigned_doctor") != doctor_id:
+        raise HTTPException(status_code=403, detail="You are not assigned to this doctor")
+
+    # Look up doctor name
+    doctor_doc = db.collection("users").document(doctor_id).get()
+    if not doctor_doc.exists:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+    doctor_data = doctor_doc.to_dict()
+
+    appt_id = str(uuid.uuid4())
+    consultation_id = str(uuid.uuid4())
+    room_hash = hashlib.sha256(f"{consultation_id}{int(time.time())}".encode()).hexdigest()[:12]
+    room_name = f"medimind-{room_hash}"
+    room_url = f"https://meet.jit.si/{room_name}"
+
+    appt = {
+        "id": appt_id,
+        "patient_id": uid,
+        "patient_name": current_user.get("full_name", "Patient"),
+        "doctor_id": doctor_id,
+        "doctor_name": doctor_data.get("full_name", "Doctor"),
+        "specialization": doctor_data.get("specialization", ""),
+        "date": booking_data.get("date", ""),
+        "time": booking_data.get("time", ""),
+        "type": "video",
+        "reason": booking_data.get("reason", "General consultation"),
+        "status": "upcoming",
+        "notes": "",
+        "report_id": booking_data.get("report_id", ""),
+        "consultation_id": consultation_id,
+        "room_name": room_name,
+        "room_url": room_url,
+        "created_at": firestore.SERVER_TIMESTAMP,
+    }
+
+    db.collection("appointments").document(appt_id).set(appt)
+
+    # Store consultation record
+    db.collection("consultations").document(consultation_id).set({
+        "id": consultation_id,
+        "appointment_id": appt_id,
+        "patient_id": uid,
+        "doctor_id": doctor_id,
+        "report_id": booking_data.get("report_id", ""),
+        "recommendation_id": booking_data.get("recommendation_id", ""),
+        "room_name": room_name,
+        "room_url": room_url,
+        "status": "scheduled",
+        "created_at": firestore.SERVER_TIMESTAMP,
+    })
+
+    # Mark the availability slot as booked if slot_id provided
+    if slot_id:
+        try:
+            slot_ref = (
+                db.collection("users")
+                .document(doctor_id)
+                .collection("availability")
+                .document(slot_id)
+            )
+            if slot_ref.get().exists:
+                slot_ref.update({"status": "booked"})
+        except Exception as e:
+            print(f"Failed to mark slot as booked: {e}")
+
+    return {
+        "message": "Appointment booked successfully",
+        "appointment_id": appt_id,
+        "consultation_id": consultation_id,
+        "room_url": room_url,
+        "date": appt["date"],
+        "time": appt["time"],
+        "doctor_name": doctor_data.get("full_name", "Doctor"),
+    }
+
 
 @router.get("/")
 async def get_appointments(current_user: dict = Depends(get_current_user)):
