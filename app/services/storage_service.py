@@ -19,13 +19,24 @@ class StorageService:
     async def get_upload_url(self, bucket: str, path: str) -> dict:
         """
         Create a signed upload URL via the Supabase Storage REST API.
-        Returns a dict with at least 'signedURL' and 'path' keys.
-        """
-        url = f"{self.base_url}/storage/v1/object/sign/upload/{bucket}/{path}"
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(url, headers={**self.headers, "Content-Type": "application/json"}, json={"expiresIn": 3600}, timeout=15)
 
-        print(f"Supabase create_signed_upload_url response [{resp.status_code}]: {resp.text[:300]}")
+        Correct Supabase endpoint:
+          POST /storage/v1/object/upload/sign/{bucket}/{path}
+          Body: { "expiresIn": <seconds> }
+
+        Response: { "url": "/object/upload/sign/{bucket}/{path}?token=...", "token": "..." }
+        The client must then PUT the file to: {SUPABASE_URL}/storage/v1{url}
+        """
+        endpoint = f"{self.base_url}/storage/v1/object/upload/sign/{bucket}/{path}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                endpoint,
+                headers={**self.headers, "Content-Type": "application/json"},
+                json={"expiresIn": 3600},
+                timeout=15,
+            )
+
+        print(f"Supabase signed upload URL [{resp.status_code}]: {resp.text[:400]}")
 
         if resp.status_code not in (200, 201):
             raise Exception(
@@ -33,17 +44,17 @@ class StorageService:
             )
 
         data = resp.json()
-        # Supabase Storage API returns: {"url": "/object/sign/upload/...", "token": "..."}
-        # Build the full signed upload URL the client can PUT to.
-        signed_path = data.get("url") or data.get("signedURL") or data.get("signed_url", "")
-        if not signed_path:
-            raise Exception(f"No URL in Supabase signed upload response: {data}")
+        # Response shape: {"url": "/object/upload/sign/bucket/path?token=...", "token": "..."}
+        relative_url = data.get("url") or data.get("signedURL") or data.get("signed_url", "")
+        if not relative_url:
+            raise Exception(f"No URL field in Supabase signed upload response: {data}")
 
-        # If it's a relative path, prepend the Supabase base URL
-        if signed_path.startswith("/"):
-            signed_url = f"{self.base_url}{signed_path}"
-        else:
-            signed_url = signed_path
+        # Build the full absolute URL the frontend will PUT the file to
+        signed_url = (
+            f"{self.base_url}/storage/v1{relative_url}"
+            if relative_url.startswith("/")
+            else relative_url
+        )
 
         return {"signedURL": signed_url, "path": path}
 
