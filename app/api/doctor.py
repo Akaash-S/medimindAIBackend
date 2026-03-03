@@ -661,8 +661,10 @@ async def update_working_hours(hours: List[WorkingDay], current_user: dict = Dep
     """Update the doctor's weekly working hours."""
     doctor_uid = current_user["uid"]
     hours_data = [h.model_dump() for h in hours]
-    db.collection("users").document(doctor_uid).update({"working_hours": hours_data})
+    print(f"[INFO] Updating working_hours for doctor {doctor_uid}: {len(hours_data)} days")
+    db.collection("users").document(doctor_uid).set({"working_hours": hours_data}, merge=True)
     return {"message": "Working hours updated", "working_hours": hours_data}
+
 
 
 # ==================== DAILY CAPACITY ====================
@@ -692,5 +694,7 @@ async def update_daily_capacities(capacities: dict, current_user: dict = Depends
         except (ValueError, TypeError):
             continue
             
-    db.collection("users").document(doctor_uid).update({"daily_capacities": sanitized})
+    print(f"[INFO] Updating daily_capacities for doctor {doctor_uid}: {len(sanitized)} dates")
+    db.collection("users").document(doctor_uid).set({"daily_capacities": sanitized}, merge=True)
     return {"message": "Daily capacities updated", "daily_capacities": sanitized}
+

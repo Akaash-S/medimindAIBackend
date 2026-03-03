@@ -42,60 +42,16 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
 
 
 
-    # ── 1. Manual one-off slots (Split into increments) ──────────────────────
-    manual_slots = []
-    now = datetime.now()
-    slots_ref = (
-        db.collection("users")
-        .document(doctor_id)
-        .collection("availability")
-        .stream()
-    )
-    
-    # Get doctor profile for consultation duration and daily capacity
+    # ── 1. Auto-generate from weekly working hours & Prefetch data ──────────
     doctor_doc = db.collection("users").document(doctor_id).get()
     doctor_data = doctor_doc.to_dict() if doctor_doc.exists else {}
     consultation_duration = int(doctor_data.get("consultation_duration", 30))
     daily_capacities = doctor_data.get("daily_capacities", {})
+    working_hours = doctor_data.get("working_hours", [])
     
-    # Track bookings per day to respect capacity
-    bookings_per_day = {}
-    
-    for doc in slots_ref:
-        slot = doc.to_dict()
-        if slot.get("status") == "free":
-            s_date = slot.get("date")
-            s_start = slot.get("start_time")
-            s_end = slot.get("end_time")
-            if not s_date or not s_start or not s_end:
-                continue
-                
-            try:
-                # Parse range
-                start_dt = datetime.strptime(f"{s_date} {s_start}", "%Y-%m-%d %H:%M")
-                end_dt = datetime.strptime(f"{s_date} {s_end}", "%Y-%m-%d %H:%M")
-                
-                # Split into increments
-                curr = start_dt
-                while curr + timedelta(minutes=consultation_duration) <= end_dt:
-                    # Filter: must be in the future
-                    if curr > now:
-                        manual_slots.append({
-                            "id": f"man_{doc.id}_{curr.strftime('%H%M')}",
-                            "date": s_date,
-                            "start_time": curr.strftime("%H:%M"),
-                            "end_time": (curr + timedelta(minutes=consultation_duration)).strftime("%H:%M"),
-                            "status": "free",
-                            "source": "manual",
-                        })
-                    curr += timedelta(minutes=consultation_duration)
-            except Exception:
-                continue
-
-
-    # ── 2. Auto-generate from weekly working hours ───────────────────────────
-    # (Existing appointments for blocking)
+    # ── 2. Get existing UPCOMING appointments (for blocking) ────────────────
     existing_times: set = set()
+    bookings_per_day: dict = {}
     try:
         appt_docs = (
             db.collection("appointments")
@@ -106,16 +62,63 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
         for appt in appt_docs:
             ad = appt.to_dict()
             dt = ad.get("date")
-            tm = ad.get("time")
+            tm = ad.get("time") # "HH:MM - HH:MM"
             if dt and tm:
                 existing_times.add(f"{dt}_{tm}")
                 bookings_per_day[dt] = bookings_per_day.get(dt, 0) + 1
     except Exception:
         pass
 
-    # Build weekly schedule map
+    # ── 3. Manual one-off slots (Split into increments) ──────────────────────
+    manual_slots = []
+    now = datetime.now()
+    slots_ref = (
+        db.collection("users")
+        .document(doctor_id)
+        .collection("availability")
+        .stream()
+    )
+    
+    for doc in slots_ref:
+        slot = doc.to_dict()
+        if slot.get("status") == "free":
+            s_date = slot.get("date")
+            s_start = slot.get("start_time")
+            s_end = slot.get("end_time")
+            if not s_date or not s_start or not s_end:
+                continue
+                
+            # Capacity check for manual slots too
+            daily_cap = daily_capacities.get(s_date)
+            if daily_cap is not None and bookings_per_day.get(s_date, 0) >= int(daily_cap):
+                continue
+
+            try:
+                start_dt = datetime.strptime(f"{s_date} {s_start}", "%Y-%m-%d %H:%M")
+                end_dt = datetime.strptime(f"{s_date} {s_end}", "%Y-%m-%d %H:%M")
+                
+                curr = start_dt
+                while curr + timedelta(minutes=consultation_duration) <= end_dt:
+                    slot_start = curr.strftime("%H:%M")
+                    slot_end = (curr + timedelta(minutes=consultation_duration)).strftime("%H:%M")
+                    time_key = f"{s_date}_{slot_start} - {slot_end}"
+
+                    # Filter: future only AND not already booked
+                    if curr > now and time_key not in existing_times:
+                        manual_slots.append({
+                            "id": f"man_{doc.id}_{curr.strftime('%H%M')}",
+                            "date": s_date,
+                            "start_time": slot_start,
+                            "end_time": slot_end,
+                            "status": "free",
+                            "source": "manual",
+                        })
+                    curr += timedelta(minutes=consultation_duration)
+            except Exception:
+                continue
+
+    # ── 4. Auto-generate from weekly working hours ───────────────────────────
     day_schedule: dict = {}
-    working_hours = doctor_data.get("working_hours", [])
     for wh in working_hours:
         if wh.get("active") and wh.get("day") and wh.get("start") and wh.get("end"):
             day_schedule[wh["day"].lower()] = {
@@ -149,7 +152,6 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
 
         curr = start_dt
         while curr + timedelta(minutes=consultation_duration) <= end_dt:
-            # Filter: future only
             if curr > now:
                 slot_start = curr.strftime("%H:%M")
                 slot_end = (curr + timedelta(minutes=consultation_duration)).strftime("%H:%M")
@@ -167,7 +169,7 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
                     })
             curr += timedelta(minutes=consultation_duration)
     
-    # ── 3. Merge, de-dupe, sort ─────────────────────────────────────────────
+    # ── 5. Merge, de-dupe, sort ─────────────────────────────────────────────
     seen = set()
     all_slots = []
     for slot in manual_slots + generated_slots:
