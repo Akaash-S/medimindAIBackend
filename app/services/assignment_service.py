@@ -203,11 +203,87 @@ class AssignmentService:
             except Exception as chat_err:
                 print(f"[AssignmentService] Auto-chat init failed: {chat_err}")
 
+            # Generate recommendations for any existing completed reports
+            # that were processed before the doctor was assigned.
+            AssignmentService._generate_retroactive_recommendations(
+                patient_uid=patient_uid,
+                doctor_id=doctor_data["id"],
+                doctor_name=doctor_data["full_name"],
+            )
+
             return doctor_data["id"]
 
         except Exception as e:
             print(f"[AssignmentService] Failed to write assignment: {e}")
             return None
+
+
+    @staticmethod
+    def _generate_retroactive_recommendations(patient_uid: str, doctor_id: str, doctor_name: str):
+        """
+        After a doctor is assigned, scan the patient's already-processed reports
+        and create consultation recommendations that were missed because the report
+        was processed before a doctor was linked.
+        """
+        try:
+            from app.api.consultations import generate_recommendation
+
+            # Fetch patient info
+            patient_doc = db.collection("users").document(patient_uid).get()
+            patient_name = "Patient"
+            if patient_doc.exists:
+                pd = patient_doc.to_dict()
+                patient_name = pd.get("full_name") or pd.get("name", "Patient")
+
+            # Get existing recommendation report_ids to avoid duplicates
+            existing_recs = (
+                db.collection("consultation_recommendations")
+                .where("patient_id", "==", patient_uid)
+                .where("doctor_id", "==", doctor_id)
+                .stream()
+            )
+            already_recommended = {r.to_dict().get("report_id") for r in existing_recs}
+
+            # Scan completed patient reports
+            reports = (
+                db.collection("reports")
+                .where("user_id", "==", patient_uid)
+                .where("status", "==", "completed")
+                .stream()
+            )
+
+            for report_doc in reports:
+                rd = report_doc.to_dict()
+                report_id = rd.get("id") or report_doc.id
+                if report_id in already_recommended:
+                    continue  # already has a recommendation
+
+                risk = (rd.get("risk_level") or rd.get("analysis", {}).get("risk_level", "")).lower()
+                if risk not in ("medium", "high"):
+                    continue  # only recommend for elevated risk
+
+                summary = (
+                    rd.get("summary")
+                    or rd.get("analysis", {}).get("summary", "")
+                    or "Report flagged for medical review."
+                )
+                reason_type = "ai_escalation" if risk == "high" else "post_report"
+
+                generate_recommendation(
+                    user_id=patient_uid,
+                    doctor_id=doctor_id,
+                    report_id=report_id,
+                    reason_type=reason_type,
+                    risk_level=risk.capitalize(),
+                    summary=summary,
+                    doctor_name=doctor_name,
+                    patient_name=patient_name,
+                )
+                print(f"[AssignmentService] Created retroactive recommendation for report {report_id} (risk={risk})")
+
+        except Exception as e:
+            print(f"[AssignmentService] Retroactive recommendation failed: {e}")
+
 
     @staticmethod
     async def reassign_doctor(patient_uid: str) -> Optional[str]:
