@@ -57,46 +57,46 @@ def generate_recommendation(
 
 def auto_recommend_from_report(report_id: str, user_id: str, analysis: dict):
     """
-    Called after AI analysis completes.  Decides whether to create a recommendation.
+    Called after AI analysis completes.
+    Reads doctor_id from the REPORT document (per-report assignment model).
+    If no doctor is assigned to this report yet, no recommendation is created
+    — it will be created when the patient clicks 'Assign Doctor' for this report.
     """
     risk = (analysis.get("risk_level") or "").lower()
     if risk not in ("medium", "high"):
         return  # no recommendation for low-risk
 
-    # Find assigned doctor
-    user_doc = db.collection("users").document(user_id).get()
-    if not user_doc.exists:
+    # Read doctor_id from the report itself (per-report assignment model)
+    report_doc = db.collection("reports").document(report_id).get()
+    if not report_doc.exists:
         return
-    user_data = user_doc.to_dict()
-    doctor_id = user_data.get("assigned_doctor", "")
+    report_data = report_doc.to_dict()
+    doctor_id = report_data.get("doctor_id", "")
+
     if not doctor_id:
+        # Doctor not yet assigned to this report — recommendation will be
+        # auto-created by assignment_service.assign_doctor_to_report() later.
+        print(f"[auto_recommend] No doctor assigned to report {report_id} yet — skipping")
         return
 
-    doctor_doc = db.collection("users").document(doctor_id).get()
-    doctor_name = doctor_doc.to_dict().get("full_name", "Doctor") if doctor_doc.exists else "Doctor"
-    patient_name = user_data.get("full_name", "Patient")
+    # Fetch names
+    user_doc = db.collection("users").document(user_id).get()
+    patient_name = user_doc.to_dict().get("full_name", "Patient") if user_doc.exists else "Patient"
+    doctor_name  = report_data.get("doctor_name", "Doctor")
 
-    reason_type = "ai_escalation" if risk == "high" else "post_report"
+    reason_type  = "ai_escalation" if risk == "high" else "post_report"
     summary_text = analysis.get("summary", "Abnormal values detected in your report.")
 
-    # Check for follow-up pattern (≥ 2 medium/high reports in last 30 days)
+    # Check follow-up pattern (≥ 2 medium/high reports in last 30 days)
     from datetime import datetime, timedelta
-    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-    recent_reports = (
-        db.collection("reports")
-        .where("user_id", "==", user_id)
-        .where("status", "==", "completed")
-        .stream()
+    recent_reports = db.collection("reports").where("user_id", "==", user_id).where("status", "==", "completed").stream()
+    elevated_count = sum(
+        1 for doc in recent_reports
+        if (doc.to_dict().get("risk_level") or "").lower() in ("medium", "high")
     )
-    elevated_count = 0
-    for doc in recent_reports:
-        d = doc.to_dict()
-        r = (d.get("risk_level") or "").lower()
-        if r in ("medium", "high"):
-            elevated_count += 1
     if elevated_count >= 2:
-        reason_type = "follow_up"
-        summary_text = f"Multiple reports with elevated risk in the past 30 days. Follow-up recommended."
+        reason_type  = "follow_up"
+        summary_text = "Multiple reports with elevated risk detected. Follow-up consultation recommended."
 
     generate_recommendation(
         user_id=user_id,

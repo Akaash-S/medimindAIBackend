@@ -1,19 +1,20 @@
 """
-Smart Doctor Assignment Service
-================================
-Rules (in priority order):
- 1. Specialization match  – doctor's specialization keyword matches patient conditions
- 2. Availability          – doctor has working_hours set OR at least one free slot
- 3. Least-loaded          – fewest assigned patients (LLA algorithm)
+Smart Doctor Assignment Service — Per-Report Model
+====================================================
+Doctor is assigned to a REPORT, not globally to a patient.
+Each report has its own doctor_id, doctor_name, consultation_status lifecycle.
 
-Falls back gracefully:
- • If no specialisation match → use any available doctor
- • If no available doctor     → use any doctor with role="doctor"
+Assignment rules (in priority order):
+ 1. Specialization match  – doctor's specialization keyword matches patient conditions
+ 2. Availability          – doctor has working_hours OR free slot
+ 3. Least-loaded          – fewest active report assignments (LLA on reports, not patients)
+
+Consultation lifecycle per report:
+  unassigned → assigned → in_consultation → completed
 """
 
 from app.core.firebase import db, firestore
 from typing import Optional
-from datetime import date, timedelta, datetime
 
 
 # ── Specialization → Condition keyword map ───────────────────────────────────
@@ -29,95 +30,82 @@ SPEC_KEYWORDS: dict[str, list[str]] = {
     "Dermatology":       ["skin", "eczema", "psoriasis", "acne", "rash", "dermat"],
     "Psychiatry":        ["anxiety", "depression", "mental", "psych", "bipolar", "adhd", "ptsd"],
     "Ophthalmology":     ["eye", "vision", "cataract", "glaucoma", "retina"],
-    "General Practice":  [],          # catch-all
+    "General Practice":  [],  # catch-all
 }
 
 
 def _score_specialization(doctor_spec: str, patient_conditions: str) -> int:
-    """Return number of keyword hits between doctor specialisation and patient conditions."""
     if not doctor_spec or not patient_conditions:
         return 0
     conditions_lower = patient_conditions.lower()
-    spec_normalised = doctor_spec.strip().title()
-    keywords = SPEC_KEYWORDS.get(spec_normalised, [])
+    keywords = SPEC_KEYWORDS.get(doctor_spec.strip().title(), [])
     return sum(1 for kw in keywords if kw in conditions_lower)
 
 
 def _doctor_has_availability(doctor_id: str, doctor_data: dict) -> bool:
-    """
-    Returns True if the doctor has any free time slots available
-    (either manual one-off slots in the sub-collection or working_hours configured).
-    """
-    # Check manual free slots
     try:
-        slots_ref = (
-            db.collection("users")
-            .document(doctor_id)
-            .collection("availability")
-            .where("status", "==", "free")
-            .limit(1)
-            .get()
+        slots = (
+            db.collection("users").document(doctor_id)
+            .collection("availability").where("status", "==", "free").limit(1).get()
         )
-        if slots_ref:
+        if slots:
             return True
     except Exception:
         pass
-
-    # Check working hours — if at least one day is active, doctor is available
     working_hours = doctor_data.get("working_hours", [])
-    if working_hours and any(wh.get("active") for wh in working_hours):
-        return True
-
-    return False
+    return bool(working_hours and any(wh.get("active") for wh in working_hours))
 
 
 class AssignmentService:
 
     @staticmethod
-    async def get_best_doctor(patient_uid: str) -> Optional[dict]:
+    async def get_best_doctor(patient_uid: str, report_id: str | None = None) -> Optional[dict]:
         """
-        Smart doctor selection:
-          1. Fetch patient conditions
-          2. Score all role=doctor users by specialisation match
-          3. Filter by availability
-          4. Sort by (availability_priority, -score, patient_count)
-          5. Return the best match
+        Smart doctor selection for a specific report.
+        Scores by: specialization match → availability → fewest active report assignments.
         """
-        # ── Fetch patient data ───────────────────────────────────────────────
+        # ── Patient conditions ────────────────────────────────────────────────
         patient_doc = db.collection("users").document(patient_uid).get()
-        patient_conditions: str = ""
+        patient_conditions = ""
         if patient_doc.exists:
             pd = patient_doc.to_dict()
             conditions = pd.get("conditions", "") or ""
-            allergies = pd.get("allergies", "") or ""
+            allergies  = pd.get("allergies", "")  or ""
             patient_conditions = f"{conditions} {allergies}".strip()
 
-        # ── Fetch all doctors ────────────────────────────────────────────────
+        # ── Also check report's own AI analysis for condition clues ──────────
+        if report_id:
+            rep_doc = db.collection("reports").document(report_id).get()
+            if rep_doc.exists:
+                rd = rep_doc.to_dict()
+                ai_summary = (rd.get("summary") or (rd.get("analysis") or {}).get("summary", ""))
+                patient_conditions = f"{patient_conditions} {ai_summary}".strip()
+
+        # ── Fetch all doctors ─────────────────────────────────────────────────
         doctors_ref = db.collection("users").where("role", "==", "doctor").stream()
         doctors = [doc.to_dict() | {"id": doc.id} for doc in doctors_ref]
-
         if not doctors:
-            print("[AssignmentService] No doctors found in the system.")
+            print("[AssignmentService] No doctors found.")
             return None
 
-        # ── Score each doctor ────────────────────────────────────────────────
+        # ── Score each doctor ─────────────────────────────────────────────────
         scored = []
         for doctor in doctors:
             doc_id = doctor["id"]
-            spec = doctor.get("specialization", "") or ""
+            spec   = doctor.get("specialization", "") or ""
             spec_score = _score_specialization(spec, patient_conditions)
-            available = _doctor_has_availability(doc_id, doctor)
+            available  = _doctor_has_availability(doc_id, doctor)
 
-            # Count assigned patients
+            # LLA: count active report assignments (not patient count)
             try:
-                patient_count = len(list(
-                    db.collection("users")
-                    .where("role", "==", "patient")
-                    .where("assigned_doctor", "==", doc_id)
+                active_reports = len(list(
+                    db.collection("reports")
+                    .where("doctor_id", "==", doc_id)
+                    .where("consultation_status", "in", ["assigned", "in_consultation"])
                     .stream()
                 ))
             except Exception:
-                patient_count = 0
+                active_reports = 0
 
             scored.append({
                 "id": doc_id,
@@ -125,194 +113,174 @@ class AssignmentService:
                 "specialization": spec,
                 "spec_score": spec_score,
                 "available": available,
-                "patient_count": patient_count,
+                "active_reports": active_reports,
             })
 
-        # ── Select: prefer specialisation-match + available, then LLA ───────
-        # Tier 1: spec match AND available
+        # ── 4-tier selection ──────────────────────────────────────────────────
         tier1 = [d for d in scored if d["spec_score"] > 0 and d["available"]]
-        # Tier 2: spec match but no availability set (doctor just registered)
         tier2 = [d for d in scored if d["spec_score"] > 0 and not d["available"]]
-        # Tier 3: available but no spec match
         tier3 = [d for d in scored if d["spec_score"] == 0 and d["available"]]
-        # Tier 4: any doctor
-        tier4 = [d for d in scored if d["spec_score"] == 0 and not d["available"]]
+        tier4 = scored  # fallback: any doctor
 
         for tier in [tier1, tier2, tier3, tier4]:
             if tier:
-                # Within tier: highest spec_score first, then fewest patients
-                tier.sort(key=lambda d: (-d["spec_score"], d["patient_count"]))
+                tier.sort(key=lambda d: (-d["spec_score"], d["active_reports"]))
                 best = tier[0]
                 print(
                     f"[AssignmentService] Selected Dr. {best['full_name']} "
                     f"(spec={best['specialization']}, score={best['spec_score']}, "
-                    f"patients={best['patient_count']}, available={best['available']})"
+                    f"active_reports={best['active_reports']}, available={best['available']})"
                 )
                 return best
 
         return None
 
     @staticmethod
-    async def assign_doctor_to_patient(patient_uid: str) -> Optional[str]:
+    async def assign_doctor_to_report(report_id: str, patient_uid: str) -> Optional[dict]:
         """
-        Assigns the best matching doctor to a patient and writes to Firestore.
-        Always does a fresh search — never returns a cached doctor.
+        Assigns the best matching doctor to a specific REPORT.
+        Writes: report.doctor_id, report.doctor_name, report.consultation_status = 'assigned'
+        Also updates user.assigned_doctor (most recent) for chat purposes.
+        Creates a per-report relationship record.
         """
-        doctor_data = await AssignmentService.get_best_doctor(patient_uid)
+        doctor_data = await AssignmentService.get_best_doctor(patient_uid, report_id)
         if not doctor_data:
             return None
 
+        doctor_id   = doctor_data["id"]
+        doctor_name = doctor_data["full_name"]
+        doctor_spec = doctor_data.get("specialization", "")
+
         try:
-            user_ref = db.collection("users").document(patient_uid)
-            user_doc = user_ref.get()
-            user_doc_data = user_doc.to_dict() if user_doc.exists else {}
+            # ── 1. Write to report document ───────────────────────────────────
+            report_ref = db.collection("reports").document(report_id)
+            report_doc = report_ref.get()
+            if not report_doc.exists:
+                print(f"[AssignmentService] Report {report_id} not found.")
+                return None
 
-            # Write assignment to patient
-            user_ref.update({
-                "assigned_doctor": doctor_data["id"],
-                "assigned_doctor_name": doctor_data["full_name"],
-                "assigned_doctor_specialization": doctor_data.get("specialization", ""),
-                "assigned_at": firestore.SERVER_TIMESTAMP,
+            report_ref.update({
+                "doctor_id":              doctor_id,
+                "doctor_name":            doctor_name,
+                "doctor_specialization":  doctor_spec,
+                "consultation_status":    "assigned",
+                "assigned_at":            firestore.SERVER_TIMESTAMP,
             })
 
-            # Create / update formal relationship document
-            rel_id = f"{doctor_data['id']}_{patient_uid}"
+            # ── 2. Update user.assigned_doctor for chat (latest only) ─────────
+            db.collection("users").document(patient_uid).update({
+                "assigned_doctor":              doctor_id,
+                "assigned_doctor_name":         doctor_name,
+                "assigned_doctor_specialization": doctor_spec,
+                "assigned_at":                  firestore.SERVER_TIMESTAMP,
+            })
+
+            # ── 3. Create per-report relationship record ──────────────────────
+            rel_id = f"{doctor_id}_{patient_uid}_{report_id}"
             db.collection("relationships").document(rel_id).set({
-                "id": rel_id,
-                "doctor_id": doctor_data["id"],
-                "patient_id": patient_uid,
-                "doctor_name": doctor_data["full_name"],
-                "specialization": doctor_data.get("specialization", ""),
-                "spec_score": doctor_data.get("spec_score", 0),
-                "status": "active",
-                "created_at": firestore.SERVER_TIMESTAMP,
+                "id":             rel_id,
+                "doctor_id":      doctor_id,
+                "patient_id":     patient_uid,
+                "report_id":      report_id,
+                "doctor_name":    doctor_name,
+                "specialization": doctor_spec,
+                "spec_score":     doctor_data.get("spec_score", 0),
+                "status":         "active",
+                "created_at":     firestore.SERVER_TIMESTAMP,
             })
 
-            # Auto-init chat between doctor and patient
+            # ── 4. Auto-init chat (if no existing chat for this doctor-patient) ─
             try:
+                patient_doc = db.collection("users").document(patient_uid).get()
+                patient_name = "Patient"
+                if patient_doc.exists:
+                    pd = patient_doc.to_dict()
+                    patient_name = pd.get("full_name") or pd.get("name", "Patient")
                 from app.services.chat_service import chat_service
-                patient_name = user_doc_data.get("full_name") or user_doc_data.get("name", "Patient")
                 await chat_service.initialize_conversation(
                     participant_1_id=patient_uid,
-                    participant_2_id=doctor_data["id"],
+                    participant_2_id=doctor_id,
                     p1_name=patient_name,
                     p1_role="patient",
-                    p2_name=doctor_data["full_name"],
+                    p2_name=doctor_name,
                     p2_role="doctor",
                 )
             except Exception as chat_err:
-                print(f"[AssignmentService] Auto-chat init failed: {chat_err}")
+                print(f"[AssignmentService] Chat init failed: {chat_err}")
 
-            # Generate recommendations for any existing completed reports
-            # that were processed before the doctor was assigned.
-            AssignmentService._generate_retroactive_recommendations(
-                patient_uid=patient_uid,
-                doctor_id=doctor_data["id"],
-                doctor_name=doctor_data["full_name"],
-            )
+            # ── 5. Create consultation recommendation for this report ──────────
+            try:
+                from app.api.consultations import generate_recommendation
+                report_data = report_ref.get().to_dict() or {}
+                risk = (
+                    report_data.get("risk_level")
+                    or (report_data.get("analysis") or {}).get("risk_level", "")
+                ).lower().strip()
 
-            return doctor_data["id"]
+                patient_doc2 = db.collection("users").document(patient_uid).get()
+                patient_name2 = patient_doc2.to_dict().get("full_name", "Patient") if patient_doc2.exists else "Patient"
+
+                if risk in ("medium", "high"):
+                    summary = (
+                        report_data.get("summary")
+                        or (report_data.get("analysis") or {}).get("summary", "")
+                        or "Your report has been reviewed and a consultation is recommended."
+                    )
+                    reason_type = "ai_escalation" if risk == "high" else "post_report"
+                    generate_recommendation(
+                        user_id=patient_uid,
+                        doctor_id=doctor_id,
+                        report_id=report_id,
+                        reason_type=reason_type,
+                        risk_level=risk.capitalize(),
+                        summary=summary,
+                        doctor_name=doctor_name,
+                        patient_name=patient_name2,
+                    )
+                    print(f"[AssignmentService] Recommendation created for report {report_id} (risk={risk})")
+            except Exception as rec_err:
+                print(f"[AssignmentService] Recommendation creation failed: {rec_err}")
+
+            print(f"[AssignmentService] Report {report_id} → Dr. {doctor_name} ({doctor_spec})")
+            return {
+                "doctor_id":      doctor_id,
+                "doctor_name":    doctor_name,
+                "specialization": doctor_spec,
+                "spec_score":     doctor_data.get("spec_score", 0),
+            }
 
         except Exception as e:
-            print(f"[AssignmentService] Failed to write assignment: {e}")
+            print(f"[AssignmentService] Failed to assign: {e}")
             return None
 
-
     @staticmethod
-    def _generate_retroactive_recommendations(patient_uid: str, doctor_id: str, doctor_name: str):
-        """
-        After a doctor is assigned, scan the patient's already-processed reports
-        and create consultation recommendations for any high/medium risk ones
-        that were processed before the doctor was linked.
-        """
-        print(f"[AssignmentService] Generating retroactive recommendations for patient={patient_uid}, doctor={doctor_id}")
+    async def complete_report_consultation(report_id: str, doctor_uid: str) -> bool:
+        """Mark a report's consultation as completed — frees the doctor's slot."""
         try:
-            from app.api.consultations import generate_recommendation
+            report_ref = db.collection("reports").document(report_id)
+            report_doc = report_ref.get()
+            if not report_doc.exists:
+                return False
+            rd = report_doc.to_dict()
+            if rd.get("doctor_id") != doctor_uid:
+                return False  # security check
 
-            # Fetch patient info
-            patient_doc = db.collection("users").document(patient_uid).get()
-            patient_name = "Patient"
-            if patient_doc.exists:
-                pd = patient_doc.to_dict()
-                patient_name = pd.get("full_name") or pd.get("name", "Patient")
+            report_ref.update({
+                "consultation_status": "completed",
+                "completed_at":        firestore.SERVER_TIMESTAMP,
+            })
 
-            # Get existing recommendations for this patient (single-field query, no composite index needed)
-            existing_recs = (
-                db.collection("consultation_recommendations")
-                .where("patient_id", "==", patient_uid)
-                .stream()
-            )
-            # Collect report_ids that already have a recommendation (filter in Python)
-            already_recommended = {
-                r.to_dict().get("report_id")
-                for r in existing_recs
-                if r.to_dict().get("status") == "active"
-            }
-            print(f"[AssignmentService] Already recommended report_ids: {already_recommended}")
+            # Mark relationship as completed
+            patient_uid = rd.get("user_id", "")
+            rel_id = f"{doctor_uid}_{patient_uid}_{report_id}"
+            rel_ref = db.collection("relationships").document(rel_id)
+            if rel_ref.get().exists:
+                rel_ref.update({"status": "completed", "completed_at": firestore.SERVER_TIMESTAMP})
 
-            # Scan completed patient reports (single-field query)
-            reports = (
-                db.collection("reports")
-                .where("user_id", "==", patient_uid)
-                .stream()
-            )
-
-            count = 0
-            for report_doc in reports:
-                rd = report_doc.to_dict()
-                if rd.get("status") != "completed":
-                    continue
-
-                report_id = rd.get("id") or report_doc.id
-                if report_id in already_recommended:
-                    print(f"[AssignmentService] Skipping {report_id} - already has active recommendation")
-                    continue
-
-                risk = (rd.get("risk_level") or (rd.get("analysis") or {}).get("risk_level", "")).lower().strip()
-                print(f"[AssignmentService] Report {report_id}: risk={risk!r}")
-                if risk not in ("medium", "high"):
-                    continue
-
-                summary = (
-                    rd.get("summary")
-                    or (rd.get("analysis") or {}).get("summary", "")
-                    or "Report has been flagged for medical review."
-                )
-                reason_type = "ai_escalation" if risk == "high" else "post_report"
-
-                rec_id = generate_recommendation(
-                    user_id=patient_uid,
-                    doctor_id=doctor_id,
-                    report_id=report_id,
-                    reason_type=reason_type,
-                    risk_level=risk.capitalize(),
-                    summary=summary,
-                    doctor_name=doctor_name,
-                    patient_name=patient_name,
-                )
-                count += 1
-                print(f"[AssignmentService] Created recommendation {rec_id} for report {report_id} (risk={risk})")
-
-            print(f"[AssignmentService] Retroactive recommendations complete: {count} created")
-
+            return True
         except Exception as e:
-            print(f"[AssignmentService] Retroactive recommendation FAILED: {type(e).__name__}: {e}")
-
-
-
-    @staticmethod
-    async def reassign_doctor(patient_uid: str) -> Optional[str]:
-        """
-        Allows re-assignment: clears the old doctor link and picks a fresh best match.
-        Used when a patient wants to switch doctors or when called per-report.
-        """
-        # Clear existing assignment first
-        db.collection("users").document(patient_uid).update({
-            "assigned_doctor": firestore.DELETE_FIELD,
-            "assigned_doctor_name": firestore.DELETE_FIELD,
-            "assigned_doctor_specialization": firestore.DELETE_FIELD,
-        })
-        return await AssignmentService.assign_doctor_to_patient(patient_uid)
+            print(f"[AssignmentService] complete_report_consultation failed: {e}")
+            return False
 
 
 assignment_service = AssignmentService()

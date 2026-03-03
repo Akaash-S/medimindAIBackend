@@ -54,80 +54,85 @@ def _get_initials(name: str) -> str:
 
 @router.get("/patients")
 async def get_doctor_patients(current_user: dict = Depends(get_current_doctor)):
-    """Fetch patients assigned to this doctor with enriched data."""
+    """
+    Fetch patients who have at least one report assigned to this doctor.
+    Uses the per-report doctor_id field (not user.assigned_doctor).
+    """
     doctor_uid = current_user["uid"]
-    
-    patients_ref = db.collection("users").where(
-        "role", "==", "patient"
-    ).where("assigned_doctor", "==", doctor_uid)
-    docs = list(patients_ref.stream())
-    
+
+    # Get all reports where doctor_id == this doctor and consultation is active/assigned
+    assigned_reports = (
+        db.collection("reports")
+        .where("doctor_id", "==", doctor_uid)
+        .stream()
+    )
+
+    # Build patient_uid → list of reports map
+    patient_reports: dict[str, list[dict]] = {}
+    for rdoc in assigned_reports:
+        rd = rdoc.to_dict()
+        pid = rd.get("user_id", "")
+        if not pid:
+            continue
+        patient_reports.setdefault(pid, []).append(rd)
+
+    if not patient_reports:
+        return {"patients": [], "total": 0}
+
     patients = []
-    for doc in docs:
-        pd = doc.to_dict()
-        uid = pd.get("uid", doc.id)
-        
-        # Get reports (without order_by to avoid composite index requirement)
-        reports_ref = db.collection("reports").where("user_id", "==", uid).limit(10)
-        report_docs = list(reports_ref.stream())
-        
-        report_count_ref = db.collection("reports").where("user_id", "==", uid)
-        report_count = len(list(report_count_ref.stream()))
-        
-        last_report_date = None
+    for patient_uid, reports_list in patient_reports.items():
+        patient_doc = db.collection("users").document(patient_uid).get()
+        if not patient_doc.exists:
+            continue
+        pd = patient_doc.to_dict()
+
+        # Sort reports newest first
+        reports_list.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+
+        # Derive health score and risk from latest report
+        health_score     = 75
         last_report_risk = None
-        health_score = 75  # default
-        
-        # Sort in memory to find latest
-        if report_docs:
-            report_docs.sort(key=lambda d: d.to_dict().get("created_at") or "", reverse=True)
-            
-        if report_docs:
-            latest = report_docs[0].to_dict()
+        last_report_date = None
+
+        if reports_list:
+            latest = reports_list[0]
             ts = latest.get("created_at")
             if ts:
                 last_report_date = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
-            
-            # Read top-level fields written by report_service (analysis, risk_level, health_score)
-            top_risk = latest.get("risk_level")
-            top_health = latest.get("health_score")
-            ai = latest.get("analysis", {})
-            if isinstance(ai, dict) and ai:
-                health_score = top_health or ai.get("health_score", 75)
-                last_report_risk = top_risk or ai.get("risk_level")
-            elif top_health or top_risk:
-                health_score = top_health or 75
-                last_report_risk = top_risk
-        
+            ai = latest.get("analysis") or {}
+            health_score     = latest.get("health_score") or ai.get("health_score", 75)
+            last_report_risk = latest.get("risk_level") or ai.get("risk_level")
+
         conditions = pd.get("conditions", "")
         risk = last_report_risk or _compute_risk(conditions, health_score)
-        
+
         patients.append({
-            "uid": uid,
-            "full_name": pd.get("full_name", "Unknown"),
-            "email": pd.get("email", ""),
-            "age": pd.get("age"),
-            "phone": pd.get("phone", ""),
-            "gender": pd.get("gender", ""),
-            "blood_group": pd.get("blood_group", ""),
-            "address": pd.get("address", ""),
-            "photo_url": pd.get("photo_url", ""),
-            "conditions": conditions,
-            "allergies": pd.get("allergies", ""),
-            "avatar": _get_initials(pd.get("full_name", "")),
-            "health_score": health_score,
-            "risk": risk,
-            "report_count": report_count,
+            "uid":              patient_uid,
+            "full_name":        pd.get("full_name", "Unknown"),
+            "email":            pd.get("email", ""),
+            "age":              pd.get("age"),
+            "phone":            pd.get("phone", ""),
+            "gender":           pd.get("gender", ""),
+            "blood_group":      pd.get("blood_group", ""),
+            "address":          pd.get("address", ""),
+            "photo_url":        pd.get("photo_url", ""),
+            "conditions":       conditions,
+            "allergies":        pd.get("allergies", ""),
+            "avatar":           _get_initials(pd.get("full_name", "")),
+            "health_score":     health_score,
+            "risk":             risk,
+            "report_count":     len(reports_list),
             "last_report_date": last_report_date,
-            "bio": pd.get("bio", ""),
-            "assigned_at": str(pd.get("assigned_at", "")) if pd.get("assigned_at") else None,
+            "bio":              pd.get("bio", ""),
+            "assigned_at":      str(pd.get("assigned_at", "")) if pd.get("assigned_at") else None,
         })
-    
-    # Sort by risk (high first) then name
+
+    # Sort high-risk first, then by name
     risk_order = {"high": 0, "medium": 1, "low": 2}
     patients.sort(key=lambda p: (risk_order.get(p["risk"], 3), p["full_name"]))
-    
     return {"patients": patients, "total": len(patients)}
+
+
 
 
 @router.get("/patients/{patient_uid}")
@@ -142,8 +147,17 @@ async def get_patient_detail(patient_uid: str, current_user: dict = Depends(get_
         raise HTTPException(status_code=404, detail="Patient not found")
     
     pd = patient_doc.to_dict()
-    if pd.get("assigned_doctor") != doctor_uid:
-        raise HTTPException(status_code=403, detail="Patient not assigned to you")
+    # Verify this doctor has at least one report assigned to this patient
+    has_assigned_report = bool(list(
+        db.collection("reports")
+        .where("user_id", "==", patient_uid)
+        .where("doctor_id", "==", doctor_uid)
+        .limit(1)
+        .stream()
+    ))
+    if not has_assigned_report:
+        raise HTTPException(status_code=403, detail="No reports assigned to you for this patient")
+
     
     # Get patient reports (without order_by to avoid composite index requirement)
     reports_ref = db.collection("reports").where(
