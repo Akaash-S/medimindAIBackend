@@ -222,9 +222,10 @@ class AssignmentService:
     def _generate_retroactive_recommendations(patient_uid: str, doctor_id: str, doctor_name: str):
         """
         After a doctor is assigned, scan the patient's already-processed reports
-        and create consultation recommendations that were missed because the report
-        was processed before a doctor was linked.
+        and create consultation recommendations for any high/medium risk ones
+        that were processed before the doctor was linked.
         """
+        print(f"[AssignmentService] Generating retroactive recommendations for patient={patient_uid}, doctor={doctor_id}")
         try:
             from app.api.consultations import generate_recommendation
 
@@ -235,41 +236,51 @@ class AssignmentService:
                 pd = patient_doc.to_dict()
                 patient_name = pd.get("full_name") or pd.get("name", "Patient")
 
-            # Get existing recommendation report_ids to avoid duplicates
+            # Get existing recommendations for this patient (single-field query, no composite index needed)
             existing_recs = (
                 db.collection("consultation_recommendations")
                 .where("patient_id", "==", patient_uid)
-                .where("doctor_id", "==", doctor_id)
                 .stream()
             )
-            already_recommended = {r.to_dict().get("report_id") for r in existing_recs}
+            # Collect report_ids that already have a recommendation (filter in Python)
+            already_recommended = {
+                r.to_dict().get("report_id")
+                for r in existing_recs
+                if r.to_dict().get("status") == "active"
+            }
+            print(f"[AssignmentService] Already recommended report_ids: {already_recommended}")
 
-            # Scan completed patient reports
+            # Scan completed patient reports (single-field query)
             reports = (
                 db.collection("reports")
                 .where("user_id", "==", patient_uid)
-                .where("status", "==", "completed")
                 .stream()
             )
 
+            count = 0
             for report_doc in reports:
                 rd = report_doc.to_dict()
+                if rd.get("status") != "completed":
+                    continue
+
                 report_id = rd.get("id") or report_doc.id
                 if report_id in already_recommended:
-                    continue  # already has a recommendation
+                    print(f"[AssignmentService] Skipping {report_id} - already has active recommendation")
+                    continue
 
-                risk = (rd.get("risk_level") or rd.get("analysis", {}).get("risk_level", "")).lower()
+                risk = (rd.get("risk_level") or (rd.get("analysis") or {}).get("risk_level", "")).lower().strip()
+                print(f"[AssignmentService] Report {report_id}: risk={risk!r}")
                 if risk not in ("medium", "high"):
-                    continue  # only recommend for elevated risk
+                    continue
 
                 summary = (
                     rd.get("summary")
-                    or rd.get("analysis", {}).get("summary", "")
-                    or "Report flagged for medical review."
+                    or (rd.get("analysis") or {}).get("summary", "")
+                    or "Report has been flagged for medical review."
                 )
                 reason_type = "ai_escalation" if risk == "high" else "post_report"
 
-                generate_recommendation(
+                rec_id = generate_recommendation(
                     user_id=patient_uid,
                     doctor_id=doctor_id,
                     report_id=report_id,
@@ -279,10 +290,14 @@ class AssignmentService:
                     doctor_name=doctor_name,
                     patient_name=patient_name,
                 )
-                print(f"[AssignmentService] Created retroactive recommendation for report {report_id} (risk={risk})")
+                count += 1
+                print(f"[AssignmentService] Created recommendation {rec_id} for report {report_id} (risk={risk})")
+
+            print(f"[AssignmentService] Retroactive recommendations complete: {count} created")
 
         except Exception as e:
-            print(f"[AssignmentService] Retroactive recommendation failed: {e}")
+            print(f"[AssignmentService] Retroactive recommendation FAILED: {type(e).__name__}: {e}")
+
 
 
     @staticmethod
