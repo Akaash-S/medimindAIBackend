@@ -16,11 +16,7 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
     
     doctor_id = doctor_id.strip()
     uid = current_user.get("uid", "").strip()
-    print(f"[DEBUG] get_doctor_slots: doctor_id='{doctor_id}', patient_uid='{uid}'")
 
-
-    # Security: doctor must be assigned to at least one of the patient's reports
-    print(f"[DEBUG] Fetching slots for doctor_id: {doctor_id}, current_user: {current_user.get('uid')}")
     has_assignment = bool(list(
         db.collection("reports")
         .where("user_id", "==", current_user["uid"])
@@ -28,7 +24,7 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
         .limit(1)
         .stream()
     ))
-    print(f"[DEBUG] has_assignment: {has_assignment}")
+
     
     # Also check if there's a recommendation (sometimes doctors recommend before assignment is fully synced)
     if not has_assignment:
@@ -40,58 +36,65 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
             .limit(1)
             .stream()
         ))
-        print(f"[DEBUG] has_rec: {has_rec}")
         if not has_rec:
             raise HTTPException(status_code=403, detail="You are not authorized to book with this doctor")
 
 
 
-    # ── 1. Manual one-off slots ──────────────────────────────────────────────
+
+    # ── 1. Manual one-off slots (Split into increments) ──────────────────────
     manual_slots = []
+    now = datetime.now()
     slots_ref = (
         db.collection("users")
         .document(doctor_id)
         .collection("availability")
         .stream()
     )
+    
+    # Get doctor profile for consultation duration and daily capacity
+    doctor_doc = db.collection("users").document(doctor_id).get()
+    doctor_data = doctor_doc.to_dict() if doctor_doc.exists else {}
+    consultation_duration = int(doctor_data.get("consultation_duration", 30))
+    daily_capacities = doctor_data.get("daily_capacities", {})
+    
+    # Track bookings per day to respect capacity
+    bookings_per_day = {}
+    
     for doc in slots_ref:
         slot = doc.to_dict()
-        if slot.get("status", "free") == "free":
-            slot["id"] = doc.id
-            slot["source"] = "manual"
-            manual_slots.append(slot)
+        if slot.get("status") == "free":
+            s_date = slot.get("date")
+            s_start = slot.get("start_time")
+            s_end = slot.get("end_time")
+            if not s_date or not s_start or not s_end:
+                continue
+                
+            try:
+                # Parse range
+                start_dt = datetime.strptime(f"{s_date} {s_start}", "%Y-%m-%d %H:%M")
+                end_dt = datetime.strptime(f"{s_date} {s_end}", "%Y-%m-%d %H:%M")
+                
+                # Split into increments
+                curr = start_dt
+                while curr + timedelta(minutes=consultation_duration) <= end_dt:
+                    # Filter: must be in the future
+                    if curr > now:
+                        manual_slots.append({
+                            "id": f"man_{doc.id}_{curr.strftime('%H%M')}",
+                            "date": s_date,
+                            "start_time": curr.strftime("%H:%M"),
+                            "end_time": (curr + timedelta(minutes=consultation_duration)).strftime("%H:%M"),
+                            "status": "free",
+                            "source": "manual",
+                        })
+                    curr += timedelta(minutes=consultation_duration)
+            except Exception:
+                continue
+
 
     # ── 2. Auto-generate from weekly working hours ───────────────────────────
-    doctor_doc = db.collection("users").document(doctor_id).get()
-    working_hours: list = []
-    consultation_duration = 30  # minutes
-    if doctor_doc.exists:
-        data = doctor_doc.to_dict()
-        working_hours = data.get("working_hours", [])
-        # Support custom duration stored as string or int
-        try:
-            consultation_duration = int(data.get("consultation_duration", 30))
-        except (ValueError, TypeError):
-            consultation_duration = 30
-
-    # Build a map: day_name → {start, end} for active days
-    day_schedule: dict = {}
-    print(f"[DEBUG] doctor_doc exists: {doctor_doc.exists}")
-    if doctor_doc.exists:
-        data = doctor_doc.to_dict()
-        working_hours = data.get("working_hours", [])
-        print(f"[DEBUG] working_hours length: {len(working_hours)}")
-    
-    for wh in working_hours:
-        if wh.get("active") and wh.get("day") and wh.get("start") and wh.get("end"):
-            day_schedule[wh["day"].lower()] = {
-                "start": wh["start"],  # "HH:MM"
-                "end": wh["end"],
-            }
-    print(f"[DEBUG] day_schedule active days: {list(day_schedule.keys())}")
-
-
-    # Get existing UPCOMING appointments for this doctor (to block those times)
+    # (Existing appointments for blocking)
     existing_times: set = set()
     try:
         appt_docs = (
@@ -102,62 +105,78 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
         )
         for appt in appt_docs:
             ad = appt.to_dict()
-            if ad.get("date") and ad.get("time"):
-                existing_times.add(f"{ad['date']}_{ad['time']}")
+            dt = ad.get("date")
+            tm = ad.get("time")
+            if dt and tm:
+                existing_times.add(f"{dt}_{tm}")
+                bookings_per_day[dt] = bookings_per_day.get(dt, 0) + 1
     except Exception:
-        pass  # Non-blocking
+        pass
 
-    # Day-name mapping (Python weekday: 0=Mon, 6=Sun)
+    # Build weekly schedule map
+    day_schedule: dict = {}
+    working_hours = doctor_data.get("working_hours", [])
+    for wh in working_hours:
+        if wh.get("active") and wh.get("day") and wh.get("start") and wh.get("end"):
+            day_schedule[wh["day"].lower()] = {
+                "start": wh["start"],
+                "end": wh["end"],
+            }
+
     WEEKDAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-
     generated_slots = []
-    today = date.today()
-    print(f"[DEBUG] Today is {today} ({WEEKDAY_NAMES[today.weekday()]})")
+    today_date = date.today()
     
     for delta in range(0, 14):
-        day = today + timedelta(days=delta)
+        day = today_date + timedelta(days=delta)
+        date_str = day.isoformat()
         day_name = WEEKDAY_NAMES[day.weekday()]
+        
+        # Respect Daily Capacity
+        daily_cap = daily_capacities.get(date_str)
+        if daily_cap is not None and bookings_per_day.get(date_str, 0) >= int(daily_cap):
+            continue
+
         if day_name not in day_schedule:
             continue
         
         sched = day_schedule[day_name]
         try:
-            start_dt = datetime.strptime(f"{day.isoformat()} {sched['start']}", "%Y-%m-%d %H:%M")
-            end_dt = datetime.strptime(f"{day.isoformat()} {sched['end']}", "%Y-%m-%d %H:%M")
+            start_dt = datetime.strptime(f"{date_str} {sched['start']}", "%Y-%m-%d %H:%M")
+            end_dt = datetime.strptime(f"{date_str} {sched['end']}", "%Y-%m-%d %H:%M")
         except ValueError:
-            print(f"[DEBUG] Error parsing times for {day_name}: {sched['start']} - {sched['end']}")
             continue
 
-        current_dt = start_dt
-        while current_dt + timedelta(minutes=consultation_duration) <= end_dt:
-            slot_start = current_dt.strftime("%H:%M")
-            slot_end = (current_dt + timedelta(minutes=consultation_duration)).strftime("%H:%M")
-            time_key = f"{day.isoformat()}_{slot_start} - {slot_end}"
+        curr = start_dt
+        while curr + timedelta(minutes=consultation_duration) <= end_dt:
+            # Filter: future only
+            if curr > now:
+                slot_start = curr.strftime("%H:%M")
+                slot_end = (curr + timedelta(minutes=consultation_duration)).strftime("%H:%M")
+                time_key = f"{date_str}_{slot_start} - {slot_end}"
 
-            if time_key not in existing_times:
-                generated_slots.append({
-                    "id": f"gen_{day.isoformat()}_{slot_start}",
-                    "date": day.isoformat(),
-                    "start_time": slot_start,
-                    "end_time": slot_end,
-                    "status": "free",
-                    "source": "schedule",
-                })
-            current_dt += timedelta(minutes=consultation_duration)
+                if time_key not in existing_times:
+                    generated_slots.append({
+                        "id": f"gen_{date_str}_{slot_start}",
+                        "date": date_str,
+                        "start_time": slot_start,
+                        "end_time": slot_end,
+                        "status": "free",
+                        "source": "schedule",
+                        "spots_left": (int(daily_cap) - bookings_per_day.get(date_str, 0)) if daily_cap else None
+                    })
+            curr += timedelta(minutes=consultation_duration)
     
-    print(f"[DEBUG] manual_slots: {len(manual_slots)}, generated_slots: {len(generated_slots)}")
-
-
-    # ── 3. Merge, de-dupe by (date, start_time), sort ───────────────────────
+    # ── 3. Merge, de-dupe, sort ─────────────────────────────────────────────
     seen = set()
     all_slots = []
     for slot in manual_slots + generated_slots:
-        key = (slot.get("date", ""), slot.get("start_time", ""))
+        key = (slot["date"], slot["start_time"])
         if key not in seen:
             seen.add(key)
             all_slots.append(slot)
 
-    all_slots.sort(key=lambda x: (x.get("date", ""), x.get("start_time", "")))
+    all_slots.sort(key=lambda x: (x["date"], x["start_time"]))
     return all_slots
 
 
@@ -269,12 +288,15 @@ async def book_appointment(booking_data: dict, current_user: dict = Depends(get_
 
     elif slot_id:
         # Manual one-off slot — update existing record
+        # Note: we might have a composite ID like "man_{original_id}_{time}"
+        real_id = slot_id.split("_")[1] if slot_id.startswith("man_") else slot_id
+        
         try:
             slot_ref = (
                 db.collection("users")
                 .document(doctor_id)
                 .collection("availability")
-                .document(slot_id)
+                .document(real_id)
             )
             if slot_ref.get().exists:
                 slot_ref.update({
