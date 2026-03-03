@@ -561,9 +561,10 @@ async def revoke_session(session_id: str, current_user: dict = Depends(get_curre
 
 
 @router.post("/security/sessions/revoke-all")
-async def revoke_all_other_sessions(current_user: dict = Depends(get_current_user)):
+async def revoke_all_other_sessions(body: dict, current_user: dict = Depends(get_current_user)):
     """Revoke all sessions except the current one."""
     uid = current_user["uid"]
+    current_sid = body.get("current_session_id")
 
     docs = db.collection("user_sessions") \
         .where("user_id", "==", uid) \
@@ -572,7 +573,16 @@ async def revoke_all_other_sessions(current_user: dict = Depends(get_current_use
     revoked = 0
     for doc in docs:
         data = doc.to_dict()
-        if not data.get("is_current"):
+        sid = doc.id
+        # If current_sid is provided, use it to exclude the caller.
+        # Otherwise fall back to is_current flag (legacy/global).
+        should_revoke = False
+        if current_sid:
+            should_revoke = (sid != current_sid)
+        else:
+            should_revoke = not data.get("is_current")
+
+        if should_revoke:
             doc.reference.delete()
             revoked += 1
 
