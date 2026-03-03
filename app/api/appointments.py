@@ -11,15 +11,16 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
     """
     Patient-accessible endpoint: returns free consultation slots for the patient's
     assigned doctor.
-
-    Slot sources (merged, de-duped, sorted by date+time):
-    1. Manual one-off slots from users/{doctor_id}/availability (status=="free")
-    2. Auto-generated slots from the doctor's weekly working_hours for the next 14 days,
-       with 30-minute intervals — excluding dates that already have appointments.
     """
     from datetime import date, timedelta, datetime
+    
+    doctor_id = doctor_id.strip()
+    uid = current_user.get("uid", "").strip()
+    print(f"[DEBUG] get_doctor_slots: doctor_id='{doctor_id}', patient_uid='{uid}'")
+
 
     # Security: doctor must be assigned to at least one of the patient's reports
+    print(f"[DEBUG] Fetching slots for doctor_id: {doctor_id}, current_user: {current_user.get('uid')}")
     has_assignment = bool(list(
         db.collection("reports")
         .where("user_id", "==", current_user["uid"])
@@ -27,6 +28,7 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
         .limit(1)
         .stream()
     ))
+    print(f"[DEBUG] has_assignment: {has_assignment}")
     
     # Also check if there's a recommendation (sometimes doctors recommend before assignment is fully synced)
     if not has_assignment:
@@ -38,8 +40,10 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
             .limit(1)
             .stream()
         ))
+        print(f"[DEBUG] has_rec: {has_rec}")
         if not has_rec:
             raise HTTPException(status_code=403, detail="You are not authorized to book with this doctor")
+
 
 
     # ── 1. Manual one-off slots ──────────────────────────────────────────────
@@ -72,12 +76,20 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
 
     # Build a map: day_name → {start, end} for active days
     day_schedule: dict = {}
+    print(f"[DEBUG] doctor_doc exists: {doctor_doc.exists}")
+    if doctor_doc.exists:
+        data = doctor_doc.to_dict()
+        working_hours = data.get("working_hours", [])
+        print(f"[DEBUG] working_hours length: {len(working_hours)}")
+    
     for wh in working_hours:
         if wh.get("active") and wh.get("day") and wh.get("start") and wh.get("end"):
             day_schedule[wh["day"].lower()] = {
                 "start": wh["start"],  # "HH:MM"
                 "end": wh["end"],
             }
+    print(f"[DEBUG] day_schedule active days: {list(day_schedule.keys())}")
+
 
     # Get existing UPCOMING appointments for this doctor (to block those times)
     existing_times: set = set()
@@ -100,17 +112,20 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
 
     generated_slots = []
     today = date.today()
+    print(f"[DEBUG] Today is {today} ({WEEKDAY_NAMES[today.weekday()]})")
+    
     for delta in range(0, 14):
         day = today + timedelta(days=delta)
         day_name = WEEKDAY_NAMES[day.weekday()]
         if day_name not in day_schedule:
             continue
-
+        
         sched = day_schedule[day_name]
         try:
             start_dt = datetime.strptime(f"{day.isoformat()} {sched['start']}", "%Y-%m-%d %H:%M")
             end_dt = datetime.strptime(f"{day.isoformat()} {sched['end']}", "%Y-%m-%d %H:%M")
         except ValueError:
+            print(f"[DEBUG] Error parsing times for {day_name}: {sched['start']} - {sched['end']}")
             continue
 
         current_dt = start_dt
@@ -129,6 +144,9 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
                     "source": "schedule",
                 })
             current_dt += timedelta(minutes=consultation_duration)
+    
+    print(f"[DEBUG] manual_slots: {len(manual_slots)}, generated_slots: {len(generated_slots)}")
+
 
     # ── 3. Merge, de-dupe by (date, start_time), sort ───────────────────────
     seen = set()

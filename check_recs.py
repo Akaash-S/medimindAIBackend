@@ -7,19 +7,19 @@ sys.path.append(os.getcwd())
 from app.core.firebase import db
 import json
 
-def check_reports():
-    reports = db.collection("reports").stream()
+def check_recommendations():
+    recs = db.collection("consultation_recommendations").stream()
     results = []
-    for doc in reports:
+    for doc in recs:
         data = doc.to_dict()
         results.append({
-            "report_id": doc.id,
-            "user_id": data.get("user_id"),
+            "rec_id": doc.id,
+            "patient_id": data.get("patient_id"),
             "doctor_id": data.get("doctor_id"),
             "doctor_name": data.get("doctor_name"),
-            "consultation_status": data.get("consultation_status")
+            "status": data.get("status")
         })
     print(json.dumps(results, indent=2))
 
 if __name__ == "__main__":
-    check_reports()
+    check_recommendations()
