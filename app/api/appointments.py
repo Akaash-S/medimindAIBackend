@@ -19,9 +19,28 @@ async def get_doctor_slots(doctor_id: str, current_user: dict = Depends(get_curr
     """
     from datetime import date, timedelta, datetime
 
-    # Security: patient must be assigned to this doctor
-    if current_user.get("assigned_doctor") != doctor_id:
-        raise HTTPException(status_code=403, detail="You are not assigned to this doctor")
+    # Security: doctor must be assigned to at least one of the patient's reports
+    has_assignment = bool(list(
+        db.collection("reports")
+        .where("user_id", "==", current_user["uid"])
+        .where("doctor_id", "==", doctor_id)
+        .limit(1)
+        .stream()
+    ))
+    
+    # Also check if there's a recommendation (sometimes doctors recommend before assignment is fully synced)
+    if not has_assignment:
+        has_rec = bool(list(
+            db.collection("consultation_recommendations")
+            .where("patient_id", "==", current_user["uid"])
+            .where("doctor_id", "==", doctor_id)
+            .where("status", "==", "active")
+            .limit(1)
+            .stream()
+        ))
+        if not has_rec:
+            raise HTTPException(status_code=403, detail="You are not authorized to book with this doctor")
+
 
     # ── 1. Manual one-off slots ──────────────────────────────────────────────
     manual_slots = []
@@ -138,9 +157,27 @@ async def book_appointment(booking_data: dict, current_user: dict = Depends(get_
     if not doctor_id:
         raise HTTPException(status_code=400, detail="doctor_id is required")
 
-    # Verify patient is assigned to this doctor
-    if current_user.get("assigned_doctor") != doctor_id:
-        raise HTTPException(status_code=403, detail="You are not assigned to this doctor")
+    # Security: doctor must be assigned to at least one of the patient's reports
+    has_assignment = bool(list(
+        db.collection("reports")
+        .where("user_id", "==", uid)
+        .where("doctor_id", "==", doctor_id)
+        .limit(1)
+        .stream()
+    ))
+    if not has_assignment:
+        # Fallback check for recommendation
+        has_rec = bool(list(
+            db.collection("consultation_recommendations")
+            .where("patient_id", "==", uid)
+            .where("doctor_id", "==", doctor_id)
+            .where("status", "==", "active")
+            .limit(1)
+            .stream()
+        ))
+        if not has_rec:
+            raise HTTPException(status_code=403, detail="You are not authorized to book with this doctor")
+
 
     # Look up doctor name
     doctor_doc = db.collection("users").document(doctor_id).get()
