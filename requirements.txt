@@ -16,3 +16,4 @@ qrcode[pil]
 pytest
 pytest-asyncio
 pypdf
+aiosmtplib

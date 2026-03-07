@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     
     # CORS is handled by Nginx — no CORS config needed here
 
+    # Email (SMTP)
+    SMTP_SERVER: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    EMAILS_FROM_EMAIL: Optional[str] = "notifications@medimind.ai"
+    EMAILS_FROM_NAME: str = "MediMind AI"
+
     # Deployment
     PORT: int = 8000
     HOST: str = "0.0.0.0"

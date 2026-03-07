@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.firebase import db, firestore
 from app.core.security import get_current_user, get_current_patient
-import uuid, hashlib, time
+import uuid, hashlib, time, asyncio
+from app.services.email_service import email_service
 
 router = APIRouter()
 
@@ -266,6 +267,37 @@ async def book_appointment(booking_data: dict, current_user: dict = Depends(get_
         "created_at": firestore.SERVER_TIMESTAMP,
     })
 
+    # ── Send Confirmation Emails ────────────────────────────────────────────
+    try:
+        # Get patient email
+        patient_email = current_user.get("email")
+        # Get doctor email
+        doctor_email = doctor_data.get("email")
+        
+        if patient_email:
+            asyncio.create_task(email_service.send_appointment_confirmation(
+                to_email=patient_email,
+                user_name=appt["patient_name"],
+                doctor_name=appt["doctor_name"],
+                date=appt["date"],
+                time=appt["time"],
+                room_url=room_url,
+                is_doctor=False
+            ))
+            
+        if doctor_email:
+            asyncio.create_task(email_service.send_appointment_confirmation(
+                to_email=doctor_email,
+                user_name=appt["patient_name"],
+                doctor_name=appt["doctor_name"],
+                date=appt["date"],
+                time=appt["time"],
+                room_url=room_url,
+                is_doctor=True
+            ))
+    except Exception as e:
+        print(f"Failed to trigger appointment emails: {e}")
+
     # ── Persist booked slot to availability sub-collection ──────────────────
     slot_date = booking_data.get("date", "")
     slot_time_start = booking_data.get("time", "").split(" - ")[0] if " - " in booking_data.get("time", "") else ""
@@ -453,6 +485,37 @@ async def create_appointment(appointment_data: dict, current_user: dict = Depend
                 "status": "scheduled",
                 "created_at": firestore.SERVER_TIMESTAMP,
             })
+
+
+        # ── Send Confirmation Emails ────────────────────────────────────────────
+        try:
+            # For doctor-created appointments, we need to ensure we have both emails
+            patient_email = patient_data.get("email")
+            doctor_email = current_user.get("email")
+            
+            if patient_email:
+                asyncio.create_task(email_service.send_appointment_confirmation(
+                    to_email=patient_email,
+                    user_name=appt["patient_name"],
+                    doctor_name=appt["doctor_name"],
+                    date=appt["date"],
+                    time=appt["time"],
+                    room_url=appt.get("room_url", ""),
+                    is_doctor=False
+                ))
+            
+            if doctor_email:
+                asyncio.create_task(email_service.send_appointment_confirmation(
+                    to_email=doctor_email,
+                    user_name=appt["patient_name"],
+                    doctor_name=appt["doctor_name"],
+                    date=appt["date"],
+                    time=appt["time"],
+                    room_url=appt.get("room_url", ""),
+                    is_doctor=True
+                ))
+        except Exception as e:
+            print(f"Failed to trigger appointment emails: {e}")
 
     db.collection("appointments").document(appt_id).set(appt)
 

@@ -10,6 +10,7 @@ from app.core.security import get_current_user
 import uuid
 import pyotp
 import qrcode
+from app.services.email_service import email_service
 
 router = APIRouter()
 
@@ -606,7 +607,7 @@ def _log_activity(user_id: str, activity_type: str, action: str, who: str = "You
 
 
 def _send_login_alert(user_id: str, session: dict):
-    """If login alerts are enabled, log a login event."""
+    """If login alerts are enabled, log a login event and send email."""
     ref = db.collection("user_security").document(user_id)
     doc = ref.get()
     if doc.exists:
@@ -614,10 +615,30 @@ def _send_login_alert(user_id: str, session: dict):
         if data.get("login_alerts", True):
             device = session.get("device", "Unknown device")
             ip = session.get("ip", "Unknown")
+            location = session.get("location", "Unknown")
+            
             _log_activity(
                 user_id, "login",
                 f"New sign-in detected from {device} (IP: {ip})"
             )
+
+            # Send email alert asynchronously
+            import asyncio
+            user_doc = db.collection("users").document(user_id).get()
+            if user_doc.exists:
+                user_data = user_doc.to_dict()
+                email = user_data.get("email")
+                full_name = user_data.get("full_name", "MediMind User")
+                if email:
+                    asyncio.create_task(
+                        email_service.send_login_alert(
+                            to_email=email,
+                            user_name=full_name,
+                            device=device,
+                            ip=ip,
+                            location=location
+                        )
+                    )
 
 
 def _parse_device(user_agent: str) -> str:
