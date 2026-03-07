@@ -120,9 +120,14 @@ async def get_messages(conversation_id: str, current_user: dict = Depends(get_cu
     return results
 
 
+from pydantic import BaseModel
+
+class AttachmentUrlRequest(BaseModel):
+    file_name: str
+
 @router.post("/attachment-url")
 async def get_attachment_upload_url(
-    file_name: str,
+    req: AttachmentUrlRequest,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -131,7 +136,7 @@ async def get_attachment_upload_url(
     from app.services.storage_service import storage_service
     
     attachment_id = str(uuid.uuid4())
-    file_extension = file_name.split(".")[-1]
+    file_extension = req.file_name.split(".")[-1]
     file_path = f"chats/{current_user['uid']}/{attachment_id}.{file_extension}"
     
     try:
