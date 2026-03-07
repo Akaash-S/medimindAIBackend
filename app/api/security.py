@@ -629,6 +629,15 @@ def _send_login_alert(user_id: str, session: dict):
                 user_data = user_doc.to_dict()
                 email = user_data.get("email")
                 full_name = user_data.get("full_name", "MediMind User")
+                role = user_data.get("role", "patient")
+                
+                # Respect notification preferences
+                # Patients use 'email_notif', Doctors use 'email_alerts'
+                email_pref_key = "email_notif" if role == "patient" else "email_alerts"
+                if not user_data.get(email_pref_key, True):
+                    logger.info(f"Email notifications disabled for user {user_id}. Skipping login alert.")
+                    return
+
                 if email:
                     asyncio.create_task(
                         email_service.send_login_alert(

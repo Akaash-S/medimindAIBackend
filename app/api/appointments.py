@@ -274,7 +274,7 @@ async def book_appointment(booking_data: dict, current_user: dict = Depends(get_
         # Get doctor email
         doctor_email = doctor_data.get("email")
         
-        if patient_email:
+        if patient_email and current_user.get("email_notif", True):
             asyncio.create_task(email_service.send_appointment_confirmation(
                 to_email=patient_email,
                 user_name=appt["patient_name"],
@@ -285,7 +285,7 @@ async def book_appointment(booking_data: dict, current_user: dict = Depends(get_
                 is_doctor=False
             ))
             
-        if doctor_email:
+        if doctor_email and doctor_data.get("email_alerts", True):
             asyncio.create_task(email_service.send_appointment_confirmation(
                 to_email=doctor_email,
                 user_name=appt["patient_name"],
@@ -493,7 +493,7 @@ async def create_appointment(appointment_data: dict, current_user: dict = Depend
             patient_email = patient_data.get("email")
             doctor_email = current_user.get("email")
             
-            if patient_email:
+            if patient_email and patient_data.get("email_notif", True):
                 asyncio.create_task(email_service.send_appointment_confirmation(
                     to_email=patient_email,
                     user_name=appt["patient_name"],
@@ -504,7 +504,7 @@ async def create_appointment(appointment_data: dict, current_user: dict = Depend
                     is_doctor=False
                 ))
             
-            if doctor_email:
+            if doctor_email and current_user.get("email_alerts", True):
                 asyncio.create_task(email_service.send_appointment_confirmation(
                     to_email=doctor_email,
                     user_name=appt["patient_name"],
