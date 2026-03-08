@@ -131,4 +131,46 @@ class EmailService:
         """
         await EmailService._send_email(to_email, subject, html_content)
 
+    @staticmethod
+    async def send_family_access_notification(
+        to_email: str,
+        user_name: str,
+        patient_name: str,
+    ):
+        """Sends a notification that the user has been added to a patient's family access."""
+        subject = f"Family Access Granted: You've been linked to {patient_name}"
+        
+        html_content = f"""
+        <html>
+        <body style="font-family: 'Poppins', sans-serif; color: #0F172A; line-height: 1.6;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 16px;">
+                <div style="text-align: center; margin-bottom: 30px;">
+                    <h1 style="color: #0D9488; margin-bottom: 0;">MediMind AI</h1>
+                    <p style="color: #64748b; margin-top: 5px;">Family Access Notification</p>
+                </div>
+                
+                <p>Hello <strong>{user_name}</strong>,</p>
+                
+                <p><strong>{patient_name}</strong> has added you to their Family Access list on MediMind AI.</p>
+                
+                <div style="background-color: #f0fdfa; padding: 25px; border-radius: 12px; border-left: 4px solid #0D9488; margin: 25px 0;">
+                    <p style="margin: 0; color: #0D9488; font-weight: 600;">What this means:</p>
+                    <ul style="color: #64748b; margin-bottom: 0; padding-left: 20px;">
+                        <li>You can now view their health data and medical reports.</li>
+                        <li>You will stay updated on their latest AI-analyzed test results.</li>
+                        <li>You can help them manage their healthcare journey.</li>
+                    </ul>
+                </div>
+                
+                <p>Log in to your MediMind AI dashboard to view their shared medical reports.</p>
+                
+                <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 12px; color: #94a3b8;">
+                    <p>© 2026 MediMind AI. All rights reserved.</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        await EmailService._send_email(to_email, subject, html_content)
+
 email_service = EmailService()
