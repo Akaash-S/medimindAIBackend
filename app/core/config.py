@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # AI Provider
     AI_PROVIDER: str = "groq"  # "groq" or "internal"
     GROQ_API_KEY: Optional[str] = None
+    GROQ_MED_API_KEY: Optional[str] = None
     INTERNAL_AI_URL: Optional[str] = None
     
     # Security
