@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from app.core.config import settings
-from app.api import patient, doctor, reports, appointments, messages, health, auth, security, consultations
+from app.api import patient, doctor, reports, appointments, messages, health, auth, security, consultations, prescriptions
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -26,3 +26,4 @@ app.include_router(appointments.router, prefix=f"{settings.API_V1_STR}/appointme
 app.include_router(messages.router, prefix=f"{settings.API_V1_STR}/messages", tags=["messages"])
 app.include_router(security.router, prefix=f"{settings.API_V1_STR}", tags=["security"])
 app.include_router(consultations.router, prefix=f"{settings.API_V1_STR}/consultations", tags=["consultations"])
+app.include_router(prescriptions.router, prefix=f"{settings.API_V1_STR}/prescriptions", tags=["prescriptions"])
