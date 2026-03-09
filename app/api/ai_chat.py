@@ -54,7 +54,7 @@ async def _get_patient_context(patient_uid: str) -> str:
         print(f"Error fetching patient context: {e}")
         return ""
 
-@router.post("/")
+@router.post("")
 async def chat_stream(req: ChatRequest, current_user: dict = Depends(get_current_user)):
     """Stream an AI chat response using Groq."""
     
