@@ -101,6 +101,7 @@ async def get_reports(current_user: dict = Depends(get_current_user)):
     Get all reports for the current user.
     Each report now includes per-report doctor assignment fields:
     doctor_id, doctor_name, doctor_specialization, consultation_status.
+    Also includes doctor-review fields: reviewed, reviewed_at.
     """
     reports_ref = db.collection("reports").where("user_id", "==", current_user["uid"])
     docs = reports_ref.stream()
@@ -109,7 +110,7 @@ async def get_reports(current_user: dict = Depends(get_current_user)):
     for doc in docs:
         data = doc.to_dict()
         # Normalise timestamps
-        for ts_field in ("created_at", "processed_at", "assigned_at"):
+        for ts_field in ("created_at", "processed_at", "assigned_at", "reviewed_at"):
             val = data.get(ts_field)
             if val and hasattr(val, "isoformat"):
                 data[ts_field] = val.isoformat()
@@ -120,6 +121,9 @@ async def get_reports(current_user: dict = Depends(get_current_user)):
         data.setdefault("doctor_name", None)
         data.setdefault("doctor_specialization", None)
         data.setdefault("consultation_status", "unassigned")
+        # Ensure doctor-review fields always present
+        data.setdefault("reviewed", False)
+        data.setdefault("reviewed_at", None)
         results.append(data)
 
     # Sort newest first in Python (avoid composite index requirement)
