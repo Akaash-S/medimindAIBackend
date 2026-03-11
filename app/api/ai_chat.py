@@ -193,4 +193,11 @@ async def chat_stream(req: ChatRequest, current_user: dict = Depends(get_current
             print(f"Groq streaming error: {e}")
             yield "\n[Error: Connection lost. Response may be incomplete.]"
 
-    return StreamingResponse(generate(), media_type="text/event-stream", headers={"X-Conversation-Id": conv_id})
+    return StreamingResponse(
+        generate(), 
+        media_type="text/event-stream", 
+        headers={
+            "X-Conversation-Id": conv_id,
+            "Access-Control-Expose-Headers": "X-Conversation-Id"
+        }
+    )
