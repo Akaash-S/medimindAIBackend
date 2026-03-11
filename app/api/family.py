@@ -145,3 +145,61 @@ async def mark_notification_read(notif_id: str, current_user: dict = Depends(get
         
     notif_ref.update({"read": True})
     return {"message": "Notification marked as read"}
+
+@router.get("/members/{uid}/records")
+async def get_member_records(uid: str, current_user: dict = Depends(get_current_user)):
+    """Fetch all records for a family member if access is granted."""
+    # 1. Verify access link exists and is active (current_user is receiver, member is sender)
+    access_check = db.collection("family_links").where("sender_id", "==", uid).where("receiver_id", "==", current_user["uid"]).where("status", "==", "active").get()
+    
+    if not access_check:
+        raise HTTPException(status_code=403, detail="You do not have access to this member's records")
+
+    # 2. Fetch member profile
+    member_ref = db.collection("users").document(uid).get()
+    if not member_ref.exists:
+        raise HTTPException(status_code=404, detail="Member not found")
+    
+    member_data = member_ref.to_dict()
+    profile = {
+        "full_name": member_data.get("full_name"),
+        "email": member_data.get("email"),
+        "photo_url": member_data.get("photo_url"),
+        "role": member_data.get("role")
+    }
+
+    # 3. Fetch reports
+    reports_docs = db.collection("reports").where("user_id", "==", uid).stream()
+    reports = []
+    for doc in reports_docs:
+        data = doc.to_dict()
+        data["id"] = doc.id
+        # Standardize timestamps
+        for ts_field in ("created_at", "processed_at", "assigned_at", "reviewed_at"):
+            val = data.get(ts_field)
+            if val and hasattr(val, "isoformat"):
+                data[ts_field] = val.isoformat()
+        reports.append(data)
+    
+    # Sort reports newest first
+    reports.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+
+    # 4. Fetch prescriptions
+    presc_docs = db.collection("prescriptions").where("patient_uid", "==", uid).stream()
+    prescriptions = []
+    for doc in presc_docs:
+        data = doc.to_dict()
+        data["id"] = doc.id
+        if "created_at" in data and hasattr(data["created_at"], "isoformat"):
+            data["created_at"] = data["created_at"].isoformat()
+        data["medication_name"] = data.get("medicine", "Unknown")
+        prescriptions.append(data)
+    
+    # Sort prescriptions newest first
+    prescriptions.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+
+    return {
+        "profile": profile,
+        "reports": reports,
+        "prescriptions": prescriptions
+    }
