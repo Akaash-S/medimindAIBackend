@@ -59,13 +59,33 @@ async def _get_patient_context(patient_uid: str) -> str:
 @router.get("/conversations")
 async def get_ai_conversations(current_user: dict = Depends(get_current_user)):
     """Get all AI chat sessions for the current user."""
-    uid = current_user["uid"]
-    docs = db.collection("ai_conversations") \
-        .where("user_id", "==", uid) \
-        .order_by("updated_at", direction=firestore.Query.DESCENDING) \
-        .stream()
-    
-    return [{"id": doc.id, **doc.to_dict()} for doc in docs]
+    try:
+        uid = current_user["uid"]
+        # Fetch without order_by to avoid composite index requirements
+        docs = db.collection("ai_conversations") \
+            .where("user_id", "==", uid) \
+            .stream()
+        
+        results = []
+        for doc in docs:
+            data = doc.to_dict()
+            data["id"] = doc.id
+            results.append(data)
+            
+        # Manually sort by updated_at (descending)
+        def get_sort_key(x):
+            ts = x.get("updated_at") or x.get("created_at")
+            if hasattr(ts, 'isoformat'):
+                return ts.isoformat()
+            return str(ts or "")
+
+        results.sort(key=get_sort_key, reverse=True)
+        
+        return results
+    except Exception as e:
+        print(f"Error fetching AI conversations: {e}")
+        # Return empty list or raise 500
+        return []
 
 @router.get("/conversations/{conv_id}/messages")
 async def get_ai_messages(conv_id: str, current_user: dict = Depends(get_current_user)):
