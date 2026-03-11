@@ -37,6 +37,7 @@ async def _get_patient_context(patient_uid: str) -> str:
         reports = list(reports_ref.stream())
         
         context = f"Patient Profile:\n"
+        context += f"- Name: {user_data.get('full_name', 'Unknown')}\n"
         context += f"- Age: {user_data.get('age', 'Unknown')}\n"
         context += f"- Gender: {user_data.get('gender', 'Unknown')}\n"
         context += f"- Blood Group: {user_data.get('blood_group', 'Unknown')}\n"
@@ -54,6 +55,45 @@ async def _get_patient_context(patient_uid: str) -> str:
         return context
     except Exception as e:
         print(f"Error fetching patient context: {e}")
+        return ""
+
+async def _get_doctor_context(doctor_uid: str) -> str:
+    """Fetches summary of assigned patients and their reports for doctor's context."""
+    try:
+        # Get assigned patients (limit to avoid token bloat)
+        patients_ref = db.collection("users").where(
+            "assigned_doctor", "==", doctor_uid
+        ).limit(10)
+        patients = list(patients_ref.stream())
+        
+        if not patients:
+            return "You currently have no patients assigned to you."
+            
+        context = f"You are overseeing {len(patients)} patients. Here is a summary of their recent clinical data:\n\n"
+        
+        for pdoc in patients:
+            pd = pdoc.to_dict()
+            p_uid = pd.get("uid", pdoc.id)
+            context += f"Patient: {pd.get('full_name', 'Unknown')} ({pd.get('age', '??')} y/o {pd.get('gender', '??')})\n"
+            context += f"- Conditions: {pd.get('conditions', 'None reported')}\n"
+            
+            # Get latest report for this patient
+            reports_ref = db.collection("reports").where("user_id", "==", p_uid).limit(5)
+            # Firestore doesn't allow multiple inequalities; we sort in memory for simplicity here
+            reports = list(reports_ref.stream())
+            if reports:
+                reports.sort(key=lambda x: x.to_dict().get("created_at") or "", reverse=True)
+                latest = reports[0].to_dict()
+                ai = latest.get("analysis", {})
+                context += f"- Latest Report: {latest.get('file_name')} (Status: {latest.get('status')})\n"
+                if ai:
+                    context += f"  - Risk: {ai.get('risk_level', 'Unknown')}\n"
+                    context += f"  - Summary: {ai.get('summary', 'No summary.')[:150]}...\n"
+            context += "\n"
+            
+        return context
+    except Exception as e:
+        print(f"Error fetching doctor context: {e}")
         return ""
 
 @router.get("/conversations")
@@ -142,12 +182,29 @@ async def chat_stream(req: ChatRequest, current_user: dict = Depends(get_current
     conv_ref = db.collection("ai_conversations").document(conv_id)
 
     # 2. Build system prompt with context
-    system_prompt = "You are a highly skilled Medical AI Assistant named 'MediMind AI'. You analyze medical data, answer health questions, and provide guidance based on context. Note: You must always explicitly state that you are an AI and your advice does not replace a professional medical consultation.\n\n"
+    role_title = "Doctor" if role == "doctor" else "Patient"
+    system_prompt = f"You are 'MediMind AI', a medical assistant talking to a {role_title}.\n"
+    system_prompt += "Your goal is to provide clinical insights, answer health questions, and help manage medical records. "
+    if role == "doctor":
+        system_prompt += "Address the user as 'Doctor'. You may use technical clinical terminology. Focus on patient management, risk assessment, and report summaries.\n\n"
+    else:
+        system_prompt += "Address the user as a patient. Use clear, empathetic, and lay-friendly language. Avoid overly complex terminology without explanation.\n\n"
     
-    if target_patient_id:
+    system_prompt += "Note: You MUST always explicitly state that you are an AI and your advice does not replace a professional medical consultation.\n\n"
+    
+    # Add Context based on role and presence of patient_context_id
+    if role == "doctor" and not req.patient_context_id:
+        # General Doctor context (All patients)
+        doctor_context = await _get_doctor_context(uid)
+        if doctor_context:
+            system_prompt += f"Here is the context of the patients assigned to you:\n{doctor_context}\n\nUse this to help the doctor with their daily overview."
+    elif target_patient_id:
+        # Specific Patient context
         patient_context = await _get_patient_context(target_patient_id)
         if patient_context:
-            system_prompt += f"Here is the relevant clinical context for the patient you are discussing:\n{patient_context}\n\nUse this information to personalize your answer if applicable."
+            is_self = (target_patient_id == uid)
+            subj = "their own" if is_self else "this specific patient's"
+            system_prompt += f"Here is {subj} clinical context:\n{patient_context}\n\nUse this information to personalize your answer."
 
     # 3. Build messages array for Groq
     groq_messages = [{"role": "system", "content": system_prompt}]
