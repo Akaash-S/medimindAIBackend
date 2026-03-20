@@ -3,6 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from groq import AsyncGroq
+import httpx
 from app.core.config import settings
 from app.core.firebase import db, firestore
 from app.core.security import get_current_user
@@ -13,6 +14,37 @@ router = APIRouter()
 
 # The API key provided by the user in the prompt
 groq_client = AsyncGroq(api_key=settings.GROQ_MED_API_KEY)
+
+SYSTEM_GUIDE = """
+MediMindAI System Information:
+- MediMindAI is an advanced AI-powered health platform that unifies clinical data and AI insights.
+- Key Features:
+    1. AI Medical Analysis: Instantly analyze lab reports, MRI scans, and medical documents.
+    2. Smart Report Summaries: Get plain-language summaries of complex medical reports.
+    3. Real-Time Tracking: Monitor vitals, glucose levels, and health trends.
+    4. Doctor Collaboration: Securely share reports and consult with healthcare providers.
+- Security: HIPAA-compliant storage, end-to-end encryption, and role-based access control.
+- Appointments: Patients can book appointments through the 'Appointments' section.
+- Reports: All uploaded medical documents are available in the 'Reports' dashboard.
+"""
+
+RAG_ENDPOINT = "https://lakia-hyperexcursive-broderick.ngrok-free.dev/query"
+
+async def _get_medical_knowledge(query: str) -> str:
+    """Calls the external RAG service for specialized medical knowledge."""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                RAG_ENDPOINT, 
+                json={"query": query}, 
+                timeout=15.0
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("answer") or data.get("response") or ""
+    except Exception as e:
+        print(f"Error calling RAG service: {e}")
+    return ""
 
 class ChatMessage(BaseModel):
     role: str
@@ -192,6 +224,9 @@ async def chat_stream(req: ChatRequest, current_user: dict = Depends(get_current
     
     system_prompt += "Note: You MUST always explicitly state that you are an AI and your advice does not replace a professional medical consultation.\n\n"
     
+    # Add System Guide
+    system_prompt += f"Background on MediMindAI System:\n{SYSTEM_GUIDE}\n\n"
+    
     # Add Context based on role and presence of patient_context_id
     if role == "doctor" and not req.patient_context_id:
         # General Doctor context (All patients)
@@ -206,7 +241,13 @@ async def chat_stream(req: ChatRequest, current_user: dict = Depends(get_current
             subj = "their own" if is_self else "this specific patient's"
             system_prompt += f"Here is {subj} clinical context:\n{patient_context}\n\nUse this information to personalize your answer."
 
-    # 3. Build messages array for Groq
+    # 3. Add Medical Knowledge from RAG service if it's a new query
+    last_user_msg = req.messages[-1].content
+    medical_knowledge = await _get_medical_knowledge(last_user_msg)
+    if medical_knowledge:
+        system_prompt += f"\n\nSpecialized Medical Knowledge Base (Reference as needed):\n{medical_knowledge}\n"
+
+    # 4. Build messages array for Groq
     groq_messages = [{"role": "system", "content": system_prompt}]
     for msg in req.messages:
         safe_role = "assistant" if msg.role == "ai" else "user"
