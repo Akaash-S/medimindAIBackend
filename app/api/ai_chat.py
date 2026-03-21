@@ -28,7 +28,13 @@ MediMindAI System Information:
 - Reports: All uploaded medical documents are available in the 'Reports' dashboard.
 """
 
+# RAG Chatbot endpoint
+# For Docker deployment (containers on the same network):
+# RAG_ENDPOINT = "http://chatbot:8001/query"
+# For local/ngrok testing (current — Colab):
 RAG_ENDPOINT = "https://lakia-hyperexcursive-broderick.ngrok-free.dev/query"
+# For standalone GCE (no Docker):
+# RAG_ENDPOINT = "http://YOUR_GCE_STATIC_IP:8001/query"
 
 async def _get_medical_knowledge(query: str) -> str:
     """Calls the external RAG service for specialized medical knowledge."""
