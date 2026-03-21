@@ -1,11 +1,9 @@
-version: '3.8'
-
 # ─────────────────────────────────────────────────────────────────────────────
 # MediMind AI — Production Docker Compose
 # Architecture:
 #   nginx   → public-facing (ports 80/443), handles CORS, proxies to backend
 #   backend → internal only (not exposed to host), FastAPI + Gunicorn
-#   chatbot → internal RAG service (port 8001), queried by backend
+#   RAG chatbot is currently served via Colab ngrok (external to this compose)
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -20,9 +18,6 @@ services:
       - "8000"
     env_file:
       - .env
-    depends_on:
-      chatbot:
-        condition: service_healthy
     restart: always
     networks:
       - medimind-net
@@ -38,32 +33,26 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # ── RAG Chatbot Service ─────────────────────────────────────────────────────
-  chatbot:
-    build:
-      context: ../chatbot
-      dockerfile: Dockerfile
-    expose:
-      - "8001"
-    env_file:
-      - ../chatbot/.env
-    volumes:
-      # Persist FAISS index and PDFs across container rebuilds
-      - chatbot-data:/app/chatbot/data
-    restart: always
-    networks:
-      - medimind-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+  # ── RAG Chatbot Service (uncomment when deploying chatbot to this VM) ──────
+  # chatbot:
+  #   build:
+  #     context: ../chatbot
+  #     dockerfile: Dockerfile
+  #   expose:
+  #     - "8001"
+  #   env_file:
+  #     - ../chatbot/.env
+  #   volumes:
+  #     - chatbot-data:/app/chatbot/data
+  #   restart: always
+  #   networks:
+  #     - medimind-net
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 30s
 
   # ── Nginx Gateway (CORS + Reverse Proxy) ───────────────────────────────────
   nginx:
@@ -86,10 +75,11 @@ services:
         max-size: "5m"
         max-file: "3"
 
-volumes:
-  chatbot-data:
-    driver: local
+# volumes:
+#   chatbot-data:
+#     driver: local
 
 networks:
   medimind-net:
     driver: bridge
+
