@@ -232,7 +232,7 @@ async def chat_stream(req: ChatRequest, current_user: dict = Depends(get_current
         system_prompt += "Address the user as a patient. Use clear, empathetic, and lay-friendly language. Avoid overly complex terminology without explanation.\n\n"
     
     system_prompt += "IMPORTANT: You are Asha, built by MediMindAI. You MUST NEVER mention 'Groq', 'Llama', 'Facebook', 'Meta', or any specific AI model names. Use only 'Asha' or 'MediMind AI' as your identity.\n\n"
-    system_prompt += "Note: You MUST always explicitly state that you are an AI and your advice does not replace a professional medical consultation.\n\n"
+    system_prompt += "Your responses should be medical-grade: concise, professional, and based on the provided context. Address the user naturally by name if provided, but skip long introductions after the first turn.\n\n"
     
     # Add System Guide
     system_prompt += f"Background on MediMindAI System:\n{SYSTEM_GUIDE}\n\n"
