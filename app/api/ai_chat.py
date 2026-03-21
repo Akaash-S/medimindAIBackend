@@ -42,11 +42,14 @@ async def _get_medical_knowledge(query: str) -> str:
             response = await client.post(
                 RAG_ENDPOINT, 
                 json={"query": query}, 
-                timeout=15.0
+                timeout=30.0  # Increased timeout for large indexes
             )
             if response.status_code == 200:
                 data = response.json()
-                return data.get("answer") or data.get("response") or ""
+                answer = data.get("answer") or data.get("response") or ""
+                if answer:
+                    print(f"RAG SUCCESS: Retrieved {len(answer)} chars for query: {query[:50]}...")
+                return answer
     except Exception as e:
         print(f"Error calling RAG service: {e}")
     return ""
@@ -250,7 +253,8 @@ async def chat_stream(req: ChatRequest, current_user: dict = Depends(get_current
     last_user_msg = req.messages[-1].content
     medical_knowledge = await _get_medical_knowledge(last_user_msg)
     if medical_knowledge:
-        system_prompt += f"\n\nSpecialized Medical Knowledge Base (Reference as needed):\n{medical_knowledge}\n"
+        system_prompt += f"\n\n### CRITICAL MEDICAL KNOWLEDGE FOR THIS QUERY:\n{medical_knowledge}\n\n"
+        system_prompt += "INSTRUCTION: You MUST prioritize the specialized medical knowledge above. If the information is found in the knowledge base, use it to answer the user's question. If you are citing information from the knowledge base, answer as if you are retrieving it from the MediMind medical library.\n"
 
     # 4. Build messages array for Groq
     groq_messages = [{"role": "system", "content": system_prompt}]
