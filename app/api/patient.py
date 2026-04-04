@@ -53,6 +53,27 @@ async def get_my_doctor(current_user: dict = Depends(get_current_patient)):
         "experience":     doctor_data.get("experience"),
     }
 
+
+@router.get("/doctor/{doctor_id}")
+async def get_doctor_public_profile(doctor_id: str, current_user: dict = Depends(get_current_patient)):
+    """Fetch a physician's public clinical profile."""
+    doc_ref = db.collection("users").document(doctor_id).get()
+    if not doc_ref.exists:
+        raise HTTPException(status_code=404, detail="Doctor profile not found")
+        
+    data = doc_ref.to_dict()
+    if data.get("role") != "doctor":
+        raise HTTPException(status_code=403, detail="User is not a doctor")
+        
+    return {
+        "uid":            doctor_id,
+        "full_name":      data.get("full_name", "Doctor"),
+        "specialization": data.get("specialization", "Clinical Specialist"),
+        "photo_url":      data.get("photo_url"),
+        "bio":            data.get("bio"),
+        "clinic_address": data.get("clinic_address"),
+    }
+
 @router.get("/family/search")
 async def search_users_for_family(q: str = Query(..., min_length=2), current_user: dict = Depends(get_current_patient)):
     """Search for doctors or patients by name or email to add to family."""
