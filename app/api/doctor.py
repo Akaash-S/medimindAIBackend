@@ -278,6 +278,17 @@ async def get_patient_detail(patient_uid: str, current_user: dict = Depends(get_
     except Exception:
         pass  # Collection may not exist yet
     
+    # Derive Clinical Summary from latest report
+    clinical_summary = "No recent clinical summaries are available for this patient."
+    if reports:
+        # Fetch the full detail of the latest report to get the AI analysis
+        latest_report_id = reports[0]["id"]
+        latest_doc = db.collection("reports").document(latest_report_id).get()
+        if latest_doc.exists:
+            ld = latest_doc.to_dict()
+            ai = ld.get("analysis", {})
+            clinical_summary = ld.get("summary") or ai.get("summary") or clinical_summary
+    
     conditions = pd.get("conditions", "")
     risk = _compute_risk(conditions, health_score)
     
@@ -300,6 +311,7 @@ async def get_patient_detail(patient_uid: str, current_user: dict = Depends(get_
         "notes": notes,
         "prescriptions": prescriptions,
         "bio": pd.get("bio", ""),
+        "clinical_summary": clinical_summary,
     }
 
 
@@ -592,8 +604,30 @@ async def get_doctor_dashboard(current_user: dict = Depends(get_current_doctor))
     patients_ref = db.collection("users").where(
         "role", "==", "patient"
     ).where("assigned_doctor", "==", doctor_uid)
-    patients = list(patients_ref.stream())
-    total_patients = len(patients)
+    patient_docs = list(patients_ref.stream())
+    total_patients = len(patient_docs)
+    patient_uids = [p.id for p in patient_docs]
+
+    # Find Top Risk Patient (for Clinical Focus widget)
+    top_risk_patient = None
+    if patient_docs:
+        # We need to compute risk for these patients based on their latest reports
+        # For efficiency in a dashboard call, we'll just pick the one with most recent 'high' risk report or high conditions
+        high_risk_patients = []
+        for pdoc in patient_docs:
+            pd = pdoc.to_dict()
+            health_score = pd.get("health_score", 75)
+            conditions = pd.get("conditions", "")
+            risk = _compute_risk(conditions, health_score)
+            if risk == "high":
+                high_risk_patients.append({"uid": pdoc.id, "full_name": pd.get("full_name"), "age": pd.get("age"), "conditions": conditions, "risk": "high", "photo_url": pd.get("photo_url")})
+        
+        if high_risk_patients:
+            top_risk_patient = high_risk_patients[0]
+        else:
+            # Fallback to first patient if no high risk
+            pd = patient_docs[0].to_dict()
+            top_risk_patient = {"uid": patient_docs[0].id, "full_name": pd.get("full_name"), "age": pd.get("age"), "conditions": pd.get("conditions", ""), "risk": "medium", "photo_url": pd.get("photo_url")}
 
     # Count pending and reviewed reports for this doctor's patients
     pending_reports = 0
@@ -612,7 +646,8 @@ async def get_doctor_dashboard(current_user: dict = Depends(get_current_doctor))
             "total_patients": total_patients,
             "pending_reports": pending_reports,
             "reviewed_reports": reviewed_reports,
-        }
+        },
+        "top_risk_patient": top_risk_patient
     }
 
 
