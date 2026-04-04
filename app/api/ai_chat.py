@@ -100,10 +100,10 @@ async def _get_patient_context(patient_uid: str) -> str:
 async def _get_doctor_context(doctor_uid: str) -> str:
     """Fetches summary of assigned patients and their reports for doctor's context."""
     try:
-        # Get assigned patients (limit to avoid token bloat)
+        # Get assigned patients (limit to 3 to strictly protect LLM token context windows)
         patients_ref = db.collection("users").where(
             "assigned_doctor", "==", doctor_uid
-        ).limit(10)
+        ).limit(3)
         patients = list(patients_ref.stream())
         
         if not patients:
@@ -117,8 +117,8 @@ async def _get_doctor_context(doctor_uid: str) -> str:
             context += f"Patient: {pd.get('full_name', 'Unknown')} ({pd.get('age', '??')} y/o {pd.get('gender', '??')})\n"
             context += f"- Conditions: {pd.get('conditions', 'None reported')}\n"
             
-            # Get latest report for this patient
-            reports_ref = db.collection("reports").where("user_id", "==", p_uid).limit(5)
+            # Get ONLY the most recent report to minimize context bloat
+            reports_ref = db.collection("reports").where("user_id", "==", p_uid).limit(1)
             # Firestore doesn't allow multiple inequalities; we sort in memory for simplicity here
             reports = list(reports_ref.stream())
             if reports:
@@ -208,9 +208,16 @@ async def chat_stream(req: ChatRequest, current_user: dict = Depends(get_current
     conv_id = req.conversation_id
     if not conv_id:
         conv_id = str(uuid.uuid4())
+        
+        # Generate a clean title instead of substring slicing
+        first_msg = req.messages[-1].content
+        clean_title = (first_msg[:30] + '...') if len(first_msg) > 30 else first_msg
+        if role == "doctor" and req.patient_context_id:
+            clean_title = f"Case Study: {clean_title}"
+            
         db.collection("ai_conversations").document(conv_id).set({
             "user_id": uid,
-            "title": req.messages[-1].content[:50] + "...",
+            "title": clean_title.capitalize(),
             "created_at": firestore.SERVER_TIMESTAMP,
             "updated_at": firestore.SERVER_TIMESTAMP
         })
