@@ -52,11 +52,43 @@ async def submit_doctor_support(body: dict, current_user: dict = Depends(get_cur
 @router.get("/family-access")
 async def get_doctor_family_access(current_user: dict = Depends(get_current_doctor)):
     """Fetch family access/supervision settings for the doctor account."""
-    # Stubbbed for parity - doctors usually don't have family access like patients,
-    # but this endpoint ensures the UI doesn't crash and can be used for 'Delegate' access.
-    doc = db.collection("users").document(current_user["uid"]).get()
-    data = doc.to_dict() or {}
-    return data.get("family_access", {"delegates": [], "supervisors": []})
+    doctor_uid = current_user["uid"]
+    
+    # 1. Get all patients assigned to this doctor
+    # (Using the same logic as get_doctor_patients but simplified)
+    assigned_reports = db.collection("reports").where("doctor_id", "==", doctor_uid).stream()
+    patient_uids = {rdoc.to_dict().get("user_id") for rdoc in assigned_reports if rdoc.to_dict().get("user_id")}
+    
+    if not patient_uids:
+        return {"delegates": [], "supervisors": []}
+    
+    # 2. For each patient, find active family links (caregivers)
+    delegates = []
+    for patient_uid in patient_uids:
+        # Get patient name once
+        patient_doc = db.collection("users").document(patient_uid).get()
+        if not patient_doc.exists:
+            continue
+        p_data = patient_doc.to_dict()
+        patient_name = p_data.get("full_name", "Patient")
+        
+        # Find who this patient has granted access to
+        links = db.collection("family_links") \
+            .where("sender_id", "==", patient_uid) \
+            .where("status", "==", "active") \
+            .stream()
+            
+        for link in links:
+            l_data = link.to_dict()
+            delegates.append({
+                "id": link.id,
+                "caregiver": l_data.get("receiver_name", "Unknown Caregiver"),
+                "patient": patient_name,
+                "status": "Verified", # Standardized for doctor view
+                "avatar": _get_initials(l_data.get("receiver_name", ""))
+            })
+            
+    return {"delegates": delegates, "supervisors": []}
 
 
 # ==================== PATIENTS ====================

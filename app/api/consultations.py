@@ -331,11 +331,19 @@ async def book_consultation(body: dict, current_user: dict = Depends(get_current
     }
     db.collection("consultations").document(consultation_id).set(consultation)
 
-    # Mark recommendation as booked (if provided)
-    if recommendation_id:
-        rec_ref = db.collection("consultation_recommendations").document(recommendation_id)
-        if rec_ref.get().exists:
-            rec_ref.update({"status": "booked", "consultation_id": consultation_id})
+    # Mark ALL related active recommendations as booked/completed
+    related_recs = db.collection("consultation_recommendations")\
+        .where("patient_id", "==", patient_id)\
+        .where("report_id", "==", report_id)\
+        .where("status", "==", "active")\
+        .stream()
+    
+    for r_doc in related_recs:
+        r_doc.reference.update({
+            "status": "booked", 
+            "consultation_id": consultation_id,
+            "booked_at": firestore.SERVER_TIMESTAMP
+        })
 
     # Re-read appointment with resolved timestamps
     created = db.collection("appointments").document(appt_id).get().to_dict()
@@ -503,6 +511,24 @@ async def manual_recommend_consultation(body: dict, current_user: dict = Depends
 
     pat_ref = db.collection("users").document(patient_id).get()
     patient_name = pat_ref.to_dict().get("full_name", "Patient") if pat_ref.exists else "Patient"
+
+    # Check for existing active recommendation for this report
+    if report_id:
+        existing = db.collection("consultation_recommendations")\
+            .where("patient_id", "==", patient_id)\
+            .where("report_id", "==", report_id)\
+            .where("status", "==", "active")\
+            .limit(1).get()
+        
+        if existing:
+            rec_doc = existing[0]
+            rec_doc.reference.update({
+                "summary": summary,
+                "urgency": "urgent" if risk_level.lower() == "high" else "normal",
+                "risk_level": risk_level,
+                "updated_at": firestore.SERVER_TIMESTAMP
+            })
+            return {"message": "Existing recommendation updated", "recommendation_id": rec_doc.id}
 
     rec_id = generate_recommendation(
         user_id=patient_id,
