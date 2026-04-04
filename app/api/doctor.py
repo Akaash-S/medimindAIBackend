@@ -14,15 +14,49 @@ async def get_doctor_profile(current_user: dict = Depends(get_current_doctor)):
 
 @router.patch("/me")
 async def update_doctor_profile(profile_data: dict, current_user: dict = Depends(get_current_user)):
-    """Update doctor profile — uses get_current_user (not get_current_doctor) 
-    so new users completing onboarding can update before role check blocks them."""
+    """Update doctor profile — handles bio, preferences, notification_settings, etc."""
     user_ref = db.collection("users").document(current_user["uid"])
-    update_data = {**profile_data, "profile_complete": True}
+    
+    # Filter for allowed fields to prevent arbitrary document mutation
+    allowed = {
+        "full_name", "bio", "phone", "specialty", "experience", 
+        "address", "photo_url", "preferences", "notification_settings",
+        "working_hours", "daily_capacities"
+    }
+    update_data = {k: v for k, v in profile_data.items() if k in allowed}
+    update_data["profile_complete"] = True
+    
     user_ref.update(update_data)
     
     # Return the full merged document
     updated_doc = user_ref.get()
     return updated_doc.to_dict()
+
+
+@router.post("/support")
+async def submit_doctor_support(body: dict, current_user: dict = Depends(get_current_doctor)):
+    """Log a support request from the doctor."""
+    support_data = {
+        "doctor_uid": current_user["uid"],
+        "doctor_name": current_user.get("full_name"),
+        "subject": body.get("subject", "General Support"),
+        "message": body.get("message", ""),
+        "priority": body.get("priority", "medium"),
+        "status": "open",
+        "created_at": firestore.SERVER_TIMESTAMP,
+    }
+    db.collection("support_tickets").add(support_data)
+    return {"message": "Support request submitted successfully"}
+
+
+@router.get("/family-access")
+async def get_doctor_family_access(current_user: dict = Depends(get_current_doctor)):
+    """Fetch family access/supervision settings for the doctor account."""
+    # Stubbbed for parity - doctors usually don't have family access like patients,
+    # but this endpoint ensures the UI doesn't crash and can be used for 'Delegate' access.
+    doc = db.collection("users").document(current_user["uid"]).get()
+    data = doc.to_dict() or {}
+    return data.get("family_access", {"delegates": [], "supervisors": []})
 
 
 # ==================== PATIENTS ====================
@@ -561,20 +595,23 @@ async def get_doctor_dashboard(current_user: dict = Depends(get_current_doctor))
     patients = list(patients_ref.stream())
     total_patients = len(patients)
 
-    # Count pending reports for this doctor's patients
-    patient_uids = [p.to_dict().get("uid") for p in patients]
+    # Count pending and reviewed reports for this doctor's patients
     pending_reports = 0
+    reviewed_reports = 0
     if patient_uids:
-        for uid in patient_uids[:10]:  # Limit to avoid excessive reads
-            reports = db.collection("reports").where(
-                "user_id", "==", uid
-            ).where("status", "==", "pending").stream()
-            pending_reports += len(list(reports))
+        # pending
+        pending_ref = db.collection("reports").where("doctor_id", "==", doctor_uid).where("status", "==", "pending").stream()
+        pending_reports = len(list(pending_ref))
+        
+        # reviewed
+        reviewed_ref = db.collection("reports").where("doctor_id", "==", doctor_uid).where("status", "==", "reviewed").stream()
+        reviewed_reports = len(list(reviewed_ref))
 
     return {
         "stats": {
             "total_patients": total_patients,
             "pending_reports": pending_reports,
+            "reviewed_reports": reviewed_reports,
         }
     }
 
