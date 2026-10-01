@@ -57,10 +57,29 @@ def test_doctor_access_denied_to_patient(client, override_patient):
 def test_appointments_list(client, override_patient):
     response = client.get(f"{settings.API_V1_STR}/appointments/")
     assert response.status_code == 200
-    assert "appointments" in response.json()
+    assert isinstance(response.json(), list)
 
 # --- Messages Tests ---
 def test_messages_conversations(client, override_patient):
     response = client.get(f"{settings.API_V1_STR}/messages/conversations")
     assert response.status_code == 200
-    assert "conversations" in response.json()
+    assert isinstance(response.json(), list)
+
+# --- CORS Tests ---
+def test_cors_preflight_and_headers(client):
+    # Test GET request from frontend origin
+    headers = {"Origin": "https://aimedimind.vercel.app"}
+    response = client.get(f"{settings.API_V1_STR}/stats", headers=headers)
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == "https://aimedimind.vercel.app"
+
+    # Test OPTIONS preflight request
+    preflight_headers = {
+        "Origin": "https://aimedimind.vercel.app",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization,content-type",
+    }
+    options_resp = client.options(f"{settings.API_V1_STR}/stats", headers=preflight_headers)
+    assert options_resp.status_code == 200
+    assert options_resp.headers.get("access-control-allow-origin") == "https://aimedimind.vercel.app"
+

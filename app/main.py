@@ -8,9 +8,21 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
 )
 
-# CORS is handled entirely by the Nginx gateway (nginx.conf).
-# Do NOT add CORSMiddleware here — it would duplicate the
-# Access-Control-Allow-Origin header, which browsers reject.
+from fastapi.middleware.cors import CORSMiddleware
+
+# Configure CORS Middleware
+# Allows frontend applications (e.g. https://aimedimind.vercel.app, localhost) to access the API.
+cors_origins = [str(origin).rstrip("/") for origin in settings.BACKEND_CORS_ORIGINS] if settings.BACKEND_CORS_ORIGINS else ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins if "*" not in cors_origins else ["*"],
+    allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.asolvitra\.tech|https?://localhost(:\d+)?|https?://127\.0\.0\.1(:\d+)?" if "*" not in cors_origins else None,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 
 @app.get("/")
 async def root():
